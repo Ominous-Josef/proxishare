@@ -4,6 +4,7 @@ import type { Device } from "../composables/useDevices";
 defineProps<{
   devices: Device[];
   selectedId: string | null;
+  isDiscovering: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -24,8 +25,8 @@ const formatLastSeen = (timestamp: number) => {
   <div class="device-list-container">
     <div class="header">
       <h2>Devices Nearby</h2>
-      <div class="discovery-status">
-        <span class="pulse"></span>
+      <div v-if="isDiscovering" class="discovery-status">
+        <span class="pulse-dot"></span>
         Scanning LAN...
       </div>
     </div>
@@ -94,6 +95,35 @@ const formatLastSeen = (timestamp: number) => {
 </template>
 
 <style scoped>
+.list-header {
+  padding: 0 1.5rem 1rem 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  background: #6366f1;
+  border-radius: 50%;
+  animation: pulse-ring 2s infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.7;
+  }
+  70% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+}
 .device-list-container {
   padding: 1.5rem;
   background: rgba(255, 255, 255, 0.05);

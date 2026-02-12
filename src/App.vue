@@ -37,13 +37,13 @@ const handlePair = async (id: string) => {
 };
 
 const handlePairConfirm = async (code: string) => {
-  if (pairingRequest.value) {
+  if (pairingRequest.value && code.length === 6) {
     try {
       await invoke("accept_pairing", {
         deviceId: pairingRequest.value.device.id,
       });
       pairingRequest.value.isOpen = false;
-      alert("Device successfully paired!");
+      alert(`Success! Device paired using code ${code}`);
     } catch (e) {
       alert("Failed to pair device");
     }
@@ -93,6 +93,7 @@ onMounted(async () => {
         <DeviceList
           :devices="devices"
           :selected-id="selectedId"
+          :is-discovering="isDiscovering"
           @select="handleSelect"
           @pair="handlePair"
         />
@@ -181,6 +182,7 @@ body {
   width: 320px;
   background-color: var(--sidebar-bg);
   border-right: 1px solid var(--border-color);
+  backdrop-filter: blur(10px);
   display: flex;
   flex-direction: column;
 }
