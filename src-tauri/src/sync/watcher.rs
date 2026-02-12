@@ -1,9 +1,9 @@
-use notify::{Watcher, RecursiveMode, Config, Event};
+use notify::{Event, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 pub struct FolderWatcher {
-    watcher: notify::RecommendedWatcher,
+    _watcher: notify::RecommendedWatcher,
 }
 
 impl FolderWatcher {
@@ -19,6 +19,6 @@ impl FolderWatcher {
 
         watcher.watch(&path, RecursiveMode::Recursive)?;
 
-        Ok(Self { watcher })
+        Ok(Self { _watcher: watcher })
     }
 }

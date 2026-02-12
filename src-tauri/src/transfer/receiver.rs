@@ -1,8 +1,8 @@
-use crate::transfer::protocol::{FileMetadata, MessageType};
+use crate::transfer::protocol::MessageType;
 use quinn::Connection;
 use std::path::PathBuf;
-use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 
 use tauri::Emitter;
 
@@ -40,7 +40,7 @@ impl FileReceiver {
 
     pub async fn handle_transfer(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut file: Option<File> = None;
-        let mut bytes_received: u64 = 0;
+        let mut _bytes_received: u64 = 0;
 
         loop {
             let msg = self.receive_message().await?;
@@ -87,7 +87,7 @@ impl FileReceiver {
                         }
 
                         f.write_all(&data).await?;
-                        bytes_received += data.len() as u64;
+                        _bytes_received += data.len() as u64;
 
                         // Acknowledge
                         self.send_message(&MessageType::ChunkAck {

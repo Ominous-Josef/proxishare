@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::time::SystemTime;
 use crate::transfer::protocol::FileMetadata;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 pub struct SyncManager {
     shared_folder: PathBuf,
@@ -14,7 +14,10 @@ impl SyncManager {
         if !backup_folder.exists() {
             let _ = fs::create_dir_all(&backup_folder);
         }
-        Self { shared_folder, backup_folder }
+        Self {
+            shared_folder,
+            backup_folder,
+        }
     }
 
     /// Resolves a conflict between a local file and a remote modification.
@@ -22,7 +25,7 @@ impl SyncManager {
     pub fn should_overwrite(
         &self,
         relative_path: &Path,
-        remote_metadata: &FileMetadata,
+        _remote_metadata: &FileMetadata,
         remote_timestamp: u64,
     ) -> bool {
         let local_path = self.shared_folder.join(relative_path);
@@ -66,18 +69,24 @@ impl SyncManager {
     }
 
     /// Renames a conflicting file instead of overwriting.
-    pub fn handle_rename_conflict(&self, relative_path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    pub fn handle_rename_conflict(
+        &self,
+        relative_path: &Path,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let original = self.shared_folder.join(relative_path);
         if !original.exists() {
             return Ok(original);
         }
 
         let extension = original.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let file_stem = original.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-        
+        let file_stem = original
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
+
         let mut index = 1;
         let mut new_path = original.clone();
-        
+
         while new_path.exists() {
             let new_name = if extension.is_empty() {
                 format!("{}.conflict.{}", file_stem, index)
