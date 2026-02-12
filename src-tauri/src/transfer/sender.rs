@@ -1,9 +1,9 @@
-use quinn::{Connection, SendStream};
+use crate::transfer::protocol::{FileMetadata, MessageType};
+use bincode;
+use quinn::Connection;
 use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use crate::transfer::protocol::{MessageType, FileMetadata};
-use bincode;
 
 pub const CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4MB
 
@@ -16,14 +16,19 @@ impl FileSender {
         Self { connection }
     }
 
-    pub async fn calculate_hash(&self, path: &PathBuf) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn calculate_hash(
+        &self,
+        path: &PathBuf,
+    ) -> Result<String, Box<dyn std::error::Error>> {
         let mut file = File::open(path).await?;
         let mut hasher = blake3::Hasher::new();
         let mut buffer = vec![0u8; 64 * 1024];
 
         loop {
             let n = file.read(&mut buffer).await?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             hasher.update(&buffer[..n]);
         }
 
@@ -34,7 +39,7 @@ impl FileSender {
         &self,
         transfer_id: String,
         path: PathBuf,
-        progress_tx: tokio::sync::mpsc::Sender<u64>
+        progress_tx: tokio::sync::mpsc::Sender<u64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut file = File::open(&path).await?;
         let metadata = file.metadata().await?;
@@ -54,9 +59,6 @@ impl FileSender {
         };
         self.send_message(&offer).await?;
 
-        // 2. Wait for Acceptance (simplified: assuming acceptance for now)
-        // In a real implementation, we'd wait for FileAccept on another stream or the same bi-stream
-
         // 3. Send Chunks
         let mut buffer = vec![0u8; CHUNK_SIZE];
         let mut chunk_index = 0;
@@ -64,7 +66,9 @@ impl FileSender {
 
         loop {
             let n = file.read(&mut buffer).await?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
 
             let chunk_data = &buffer[..n];
             let chunk_hash = blake3::hash(chunk_data).to_hex().to_string();
@@ -77,14 +81,15 @@ impl FileSender {
             };
 
             self.send_message(&chunk_msg).await?;
-            
+
             total_sent += n as u64;
             chunk_index += 1;
             let _ = progress_tx.send(total_sent).await;
         }
 
         // 4. Send Completion
-        self.send_message(&MessageType::TransferComplete { transfer_id }).await?;
+        self.send_message(&MessageType::TransferComplete { transfer_id })
+            .await?;
 
         Ok(())
     }
@@ -92,11 +97,10 @@ impl FileSender {
     async fn send_message(&self, msg: &MessageType) -> Result<(), Box<dyn std::error::Error>> {
         let (mut send, _) = self.connection.open_bi().await?;
         let data = bincode::serialize(msg)?;
-        // Write the length first so receiver knows how much to read
         let len = data.len() as u32;
         send.write_all(&len.to_be_bytes()).await?;
         send.write_all(&data).await?;
-        send.finish().await?;
+        send.finish().map_err(|e| e.to_string())?;
         Ok(())
     }
 }

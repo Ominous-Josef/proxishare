@@ -1,5 +1,5 @@
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use rustls::client::danger::{ServerCertVerifier, HandshakeSignatureValid, ServerCertVerified};
 use std::sync::Arc;
 
 pub struct CertificateManager {
@@ -11,7 +11,7 @@ impl CertificateManager {
     pub fn generate_self_signed() -> Result<Self, Box<dyn std::error::Error>> {
         let cert_params = rcgen::CertificateParams::new(vec!["proxishare.local".to_string()]);
         let cert = rcgen::Certificate::from_params(cert_params)?;
-        
+
         Ok(Self {
             cert_der: cert.serialize_der()?,
             key_der: cert.serialize_private_key_der(),
@@ -22,21 +22,26 @@ impl CertificateManager {
         let cert_der = CertificateDer::from(self.cert_der.clone());
         let key_der = PrivateKeyDer::try_from(self.key_der.clone())?;
 
-        let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()?
-            .with_no_client_auth()
-            .with_single_cert(vec![cert_der], key_der)?;
-        
+        let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()?
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)?;
+
         config.alpn_protocols = vec![b"proxishare".to_vec()];
         Ok(config)
     }
 
     pub fn get_client_config(&self) -> Result<rustls::ClientConfig, Box<dyn std::error::Error>> {
-        let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()?
-            .with_dangerous_verification(Arc::new(SkipServerVerification))
-            .with_no_client_auth();
-        
+        let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
+        .with_no_client_auth();
+
         config.alpn_protocols = vec![b"proxishare".to_vec()];
         Ok(config)
     }
@@ -76,6 +81,8 @@ impl ServerCertVerifier for SkipServerVerification {
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::ring::default_provider().signature_verification_algorithms.supported_schemes()
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
