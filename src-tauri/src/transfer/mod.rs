@@ -48,7 +48,7 @@ impl TransferManager {
         while let Some(conn) = self.endpoint.accept().await {
             let save_dir = save_dir.clone();
             let app_handle = app_handle.clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 if let Ok(connection) = conn.await {
                     let receiver = FileReceiver::new(save_dir, connection, app_handle);
                     let _ = receiver.handle_transfer().await;

@@ -30,6 +30,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "copyright": "Copyright © 2024 ProxiShare Team",
+    "category": "Utility",
+    "shortDescription": "ProxiShare - Fast and secure local file sharing",
+    "longDescription": "ProxiShare is a peer-to-peer file sharing application that allows users to securely discover and transfer files over a local network with high speed and encryption."
   }
 }

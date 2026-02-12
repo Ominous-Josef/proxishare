@@ -116,6 +116,7 @@ async fn get_sync_status(state: tauri::State<'_, AppState>) -> Result<Option<Str
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            println!("Setup hook started");
             let app_handle = app.handle().clone();
             let downloads_dir = app_handle
                 .path()
@@ -135,17 +136,32 @@ pub fn run() {
             }
             let security = SecurityService::new(app_data_dir);
 
-            // Initialize Transfer Manager
-            let port = 51731;
-            let transfer_manager = Arc::new(TransferManager::new(port, app_handle.clone())?);
+            println!("Initializing services with block_on");
+            let (discovery, transfer_manager) = tauri::async_runtime::block_on(async {
+                println!("Inside block_on: Initializing TransferManager");
+                // Initialize Transfer Manager
+                let port = 51731;
+                let tm = TransferManager::new(port, app_handle.clone())?;
+                println!("Inside block_on: TransferManager initialized");
+
+                println!("Inside block_on: Initializing DiscoveryService");
+                // Initialize Discovery Service
+                let ds = DiscoveryService::new("ProxiNode".to_string(), port)?;
+                println!("Inside block_on: DiscoveryService initialized");
+
+                Ok::<(DiscoveryService, Arc<TransferManager>), Box<dyn std::error::Error>>((
+                    ds,
+                    Arc::new(tm),
+                ))
+            })?;
+
+            println!("Starting listening and broadcasting");
             let tm_clone = Arc::clone(&transfer_manager);
             let ds_downloads_dir = downloads_dir.clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 tm_clone.start_listening(ds_downloads_dir).await;
             });
 
-            // Initialize Discovery Service
-            let discovery = DiscoveryService::new("ProxiNode".to_string(), port)?;
             let _ = discovery.start_broadcasting();
             let _ = discovery.start_discovery();
 
@@ -156,6 +172,7 @@ pub fn run() {
                 security: Arc::new(RwLock::new(security)),
             });
 
+            println!("Setup hook finished");
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())

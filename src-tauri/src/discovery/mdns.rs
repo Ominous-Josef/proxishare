@@ -1,9 +1,9 @@
+use chrono::Utc;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use chrono::Utc;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Device {
@@ -39,11 +39,11 @@ impl DiscoveryService {
     pub fn start_broadcasting(&self) -> Result<(), Box<dyn std::error::Error>> {
         let service_type = "_proxishare._tcp.local.";
         let instance_name = format!("{}_{}", self.device_name, &self.device_id[..8]);
-        
-        // In a real app, we'd get the actual local IP. 
+
+        // In a real app, we'd get the actual local IP.
         // For now, we'll let mdns-sd handle it or use a placeholder if needed.
         // mdns-sd usually picks up the interface IPs.
-        
+
         let mut properties = HashMap::new();
         properties.insert("id".to_string(), self.device_id.clone());
         properties.insert("name".to_string(), self.device_name.clone());
@@ -68,27 +68,41 @@ impl DiscoveryService {
         let discovered_devices = Arc::clone(&self.discovered_devices);
         let own_device_id = self.device_id.clone();
 
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             while let Ok(event) = receiver.recv_async().await {
                 match event {
                     ServiceEvent::ServiceResolved(info) => {
-                        let id = info.get_property_val_str("id").unwrap_or("unknown").to_string();
+                        let id = info
+                            .get_property_val_str("id")
+                            .unwrap_or("unknown")
+                            .to_string();
                         if id == own_device_id {
                             continue;
                         }
 
-                        let name = info.get_property_val_str("name").unwrap_or("Unknown Device").to_string();
-                        let ip = info.get_addresses().iter().next().map(|ip| ip.to_string()).unwrap_or_default();
+                        let name = info
+                            .get_property_val_str("name")
+                            .unwrap_or("Unknown Device")
+                            .to_string();
+                        let ip = info
+                            .get_addresses()
+                            .iter()
+                            .next()
+                            .map(|ip| ip.to_string())
+                            .unwrap_or_default();
                         let port = info.get_port();
 
                         let mut devices = discovered_devices.write().await;
-                        devices.insert(id.clone(), Device {
-                            id,
-                            name,
-                            ip,
-                            port,
-                            last_seen: Utc::now().timestamp(),
-                        });
+                        devices.insert(
+                            id.clone(),
+                            Device {
+                                id,
+                                name,
+                                ip,
+                                port,
+                                last_seen: Utc::now().timestamp(),
+                            },
+                        );
                     }
                     ServiceEvent::ServiceRemoved(_type, name) => {
                         // We'd need a way to map instance name back to ID if we want to remove immediately,
