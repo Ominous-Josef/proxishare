@@ -16,7 +16,7 @@ export function useFileTransfer() {
   const transfers = ref<Transfer[]>([]);
 
   const sendFile = async (
-    deviceId: string,
+    _deviceId: string,
     filePath: string,
     ip: string,
     port: number
