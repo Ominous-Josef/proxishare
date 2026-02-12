@@ -7,7 +7,8 @@ defineProps<{
 }>();
 
 const emit = defineEmits<{
-  select: [deviceId: string];
+  (e: "select", id: string): void;
+  (e: "pair", id: string): void;
 }>();
 
 const formatLastSeen = (timestamp: number) => {
@@ -54,14 +55,33 @@ const formatLastSeen = (timestamp: number) => {
           </svg>
         </div>
         <div class="device-details">
-          <div class="name">{{ device.name }}</div>
-          <div class="meta">
-            <span class="ip">{{ device.ip }}</span>
-            <span class="dot">·</span>
-            <span class="last-seen">{{
-              formatLastSeen(device.last_seen)
-            }}</span>
+          <div class="device-info">
+            <div class="name-row">
+              <span class="name">{{ device.name }}</span>
+              <span v-if="device.isTrusted" class="trust-badge">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                >
+                  <path
+                    d="M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10zm-1.177-7.86l-2.265-2.265L7.144 13.3l3.679 3.679 7.41-7.41-1.414-1.414-5.996 5.995z"
+                  />
+                </svg>
+              </span>
+            </div>
+            <span class="id">{{ device.id }}</span>
+            <button
+              v-if="!device.isTrusted"
+              class="pair-link"
+              @click.stop="emit('pair', device.id)"
+            >
+              Pair Device
+            </button>
           </div>
+          <span class="last-seen">{{ formatLastSeen(device.last_seen) }}</span>
         </div>
       </div>
 
@@ -205,5 +225,33 @@ h2 {
   to {
     transform: rotate(360deg);
   }
+}
+.name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trust-badge {
+  color: #10b981;
+  display: flex;
+  align-items: center;
+}
+
+.pair-link {
+  font-size: 0.75rem;
+  color: #6366f1;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: 4px;
+  cursor: pointer;
+  text-decoration: underline;
+  opacity: 0.8;
+  transition: opacity 0.2s;
+}
+
+.pair-link:hover {
+  opacity: 1;
 }
 </style>

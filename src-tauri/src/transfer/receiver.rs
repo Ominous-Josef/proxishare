@@ -1,18 +1,22 @@
 use std::path::PathBuf;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
-use crate::transfer::protocol::MessageType;
+use tokio::io::{AsyncWriteExt, AsyncReadExt, AsyncSeekExt};
+use crate::transfer::protocol::{MessageType, FileMetadata, FileOffer};
 use fs2::FileExt;
+use std::io::SeekFrom;
 use quinn::Connection;
+
+use tauri::Emitter;
 
 pub struct FileReceiver {
     save_directory: PathBuf,
     connection: Connection,
+    app_handle: tauri::AppHandle,
 }
 
 impl FileReceiver {
-    pub fn new(save_directory: PathBuf, connection: Connection) -> Self {
-        Self { save_directory, connection }
+    pub fn new(save_directory: PathBuf, connection: Connection, app_handle: tauri::AppHandle) -> Self {
+        Self { save_directory, connection, app_handle }
     }
 
     pub fn check_disk_space(&self, required_bytes: u64) -> Result<(), String> {
@@ -75,6 +79,12 @@ impl FileReceiver {
                         f.flush().await?;
                     }
                     break;
+                }
+                MessageType::PairRequest { device_id, device_name, pairing_code } => {
+                    let _ = self.app_handle.emit("pairing-request", serde_json::json!({
+                        "device": { "id": device_id, "name": device_name },
+                        "code": pairing_code
+                    }));
                 }
                 _ => {}
             }

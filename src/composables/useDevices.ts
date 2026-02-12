@@ -1,5 +1,5 @@
-import { ref, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { onMounted, onUnmounted, ref } from "vue";
 
 export interface Device {
   id: string;
@@ -7,6 +7,7 @@ export interface Device {
   ip: string;
   port: number;
   last_seen: number;
+  isTrusted?: boolean;
 }
 
 export function useDevices() {
@@ -29,12 +30,16 @@ export function useDevices() {
 
   const fetchDevices = async () => {
     try {
-      const discoveredDevices = await invoke<Device[]>(
-        "get_discovered_devices"
-      );
-      devices.value = discoveredDevices;
+      const result = await invoke<Device[]>("get_discovered_devices");
+      // Check trust status for each
+      for (const device of result) {
+        device.isTrusted = await invoke("is_device_trusted", {
+          deviceId: device.id,
+        });
+      }
+      devices.value = result;
     } catch (e) {
-      console.error("Failed to fetch devices:", e);
+      error.value = "Failed to fetch devices";
     }
   };
 

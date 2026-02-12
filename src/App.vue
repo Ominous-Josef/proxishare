@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { computed, onMounted, ref } from "vue";
 import DeviceList from "./components/DeviceList.vue";
 import FileTransfer from "./components/FileTransfer.vue";
+import SyncSettings from "./components/SyncSettings.vue";
 import { useDevices, type Device } from "./composables/useDevices";
 
 const { devices, isDiscovering } = useDevices();
 const selectedId = ref<string | null>(null);
+
+const pairingRequest = ref<{ device: Device; isOpen: boolean } | null>(null);
 
 const selectedDevice = computed(
   () => devices.value.find((d) => d.id === selectedId.value) || null
@@ -14,6 +19,45 @@ const selectedDevice = computed(
 const handleSelect = (id: string) => {
   selectedId.value = id;
 };
+
+const handlePair = async (id: string) => {
+  const device = devices.value.find((d) => d.id === id);
+  if (device) {
+    try {
+      await invoke("request_pairing", {
+        deviceId: id,
+        ip: device.ip,
+        port: device.port,
+      });
+      alert("Pairing request sent!");
+    } catch (e) {
+      alert("Failed to send pairing request");
+    }
+  }
+};
+
+const handlePairConfirm = async (code: string) => {
+  if (pairingRequest.value) {
+    try {
+      await invoke("accept_pairing", {
+        deviceId: pairingRequest.value.device.id,
+      });
+      pairingRequest.value.isOpen = false;
+      alert("Device successfully paired!");
+    } catch (e) {
+      alert("Failed to pair device");
+    }
+  }
+};
+
+onMounted(async () => {
+  await listen("pairing-request", (event: any) => {
+    pairingRequest.value = {
+      device: event.payload.device,
+      isOpen: true,
+    };
+  });
+});
 </script>
 
 <template>
@@ -45,10 +89,12 @@ const handleSelect = (id: string) => {
       </div>
 
       <div class="nav-section">
+        <SyncSettings style="margin: 0 1.5rem 1.5rem 1.5rem" />
         <DeviceList
           :devices="devices"
           :selected-id="selectedId"
           @select="handleSelect"
+          @pair="handlePair"
         />
       </div>
     </aside>
@@ -91,6 +137,14 @@ const handleSelect = (id: string) => {
         </div>
       </section>
     </main>
+
+    <PairingDialog
+      v-if="pairingRequest"
+      :is-open="pairingRequest.isOpen"
+      :device-name="pairingRequest.device.name"
+      @close="pairingRequest.isOpen = false"
+      @confirm="handlePairConfirm"
+    />
   </div>
 </template>
 

@@ -44,6 +44,17 @@ pub enum MessageType {
     TransferComplete { transfer_id: String },
     TransferError { transfer_id: String, message: String },
 
+    // Pairing
+    PairRequest {
+        device_id: String,
+        device_name: String,
+        pairing_code: String,
+    },
+    PairResponse {
+        accepted: bool,
+        device_id: String,
+    },
+
     // Sync (placeholder for Phase 4)
     SyncRequest {
         folder_path: String,

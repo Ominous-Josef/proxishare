@@ -5,9 +5,14 @@ use std::path::PathBuf;
 use tokio::sync::RwLock;
 use tauri::Manager;
 
+use crate::sync::SyncState;
+use crate::crypto::security::SecurityService;
+
 pub struct AppState {
     pub discovery: Arc<RwLock<Option<DiscoveryService>>>,
     pub transfer: Arc<RwLock<Option<Arc<TransferManager>>>>,
+    pub sync: Arc<RwLock<SyncState>>,
+    pub security: Arc<RwLock<SecurityService>>,
 }
 
 #[tauri::command]
@@ -25,7 +30,7 @@ async fn start_discovery(state: tauri::State<'_, AppState>, app: tauri::AppHandl
         }
 
         // Initialize Transfer Manager
-        let transfer_manager = Arc::new(TransferManager::new(port).map_err(|e| e.to_string())?);
+        let transfer_manager = Arc::new(TransferManager::new(port, app.clone()).map_err(|e| e.to_string())?);
         let tm_clone = Arc::clone(&transfer_manager);
         tokio::spawn(async move {
             tm_clone.start_listening(downloads_dir).await;
@@ -78,16 +83,53 @@ async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState {
-            discovery: Arc::new(RwLock::new(None)),
-            transfer: Arc::new(RwLock::new(None)),
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            let downloads_dir = app_handle.path().download_dir().unwrap_or_else(|_| PathBuf::from("./downloads"));
+            if !downloads_dir.exists() {
+                let _ = std::fs::create_dir_all(&downloads_dir);
+            }
+
+            // Initialize Security Service
+            let app_data_dir = app_handle.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("./data"));
+            if !app_data_dir.exists() {
+                let _ = std::fs::create_dir_all(&app_data_dir);
+            }
+            let security = SecurityService::new(app_data_dir);
+
+            // Initialize Transfer Manager
+            let port = 51731;
+            let transfer_manager = Arc::new(TransferManager::new(port, app_handle.clone()).map_err(|e| e.to_string())?);
+            let tm_clone = Arc::clone(&transfer_manager);
+            tokio::spawn(async move {
+                tm_clone.start_listening(downloads_dir).await;
+            });
+
+            // Initialize Discovery Service
+            let discovery = DiscoveryService::new(port, "ProxiNode".to_string())?;
+            discovery.start()?;
+
+            app.manage(AppState {
+                discovery: Arc::new(RwLock::new(Some(discovery))),
+                transfer: Arc::new(RwLock::new(Some(transfer_manager))),
+                sync: Arc::new(RwLock::new(SyncState::new())),
+                security: Arc::new(RwLock::new(security)),
+            });
+
+            Ok(())
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             start_discovery,
             get_discovered_devices,
-            send_file
+            send_file,
+            set_sync_folder,
+            get_sync_status,
+            get_trusted_devices,
+            is_device_trusted,
+            request_pairing,
+            accept_pairing
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
