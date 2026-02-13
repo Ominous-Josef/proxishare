@@ -33,11 +33,38 @@ export function useFileTransfer() {
     }
   };
 
+  /**
+   * Smart send that finds a reachable IP before attempting transfer
+   * Falls back to the provided IP if no reachable IP is found
+   */
+  const sendFileWithFallback = async (
+    deviceId: string,
+    filePath: string,
+    primaryIp: string,
+    port: number
+  ) => {
+    try {
+      // First, try to find a reachable IP for this device
+      const reachableIp = await invoke<string | null>("find_reachable_device_ip", { deviceId });
+      const ipToUse = reachableIp || primaryIp;
+      
+      await invoke("send_file", {
+        ip: ipToUse,
+        port,
+        path: filePath,
+      });
+    } catch (e) {
+      console.error("Failed to send file:", e);
+      throw e;
+    }
+  };
+
   // Note: Progress events will be implemented in a future step
   // by having the Rust backend emit events for the progress_tx channel.
 
   return {
     transfers,
     sendFile,
+    sendFileWithFallback,
   };
 }

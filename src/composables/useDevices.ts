@@ -5,9 +5,11 @@ export interface Device {
   id: string;
   name: string;
   ip: string;
+  all_ips: string[];
   port: number;
   last_seen: number;
   isTrusted?: boolean;
+  isReachable?: boolean;
 }
 
 export function useDevices() {
@@ -28,14 +30,32 @@ export function useDevices() {
     }
   };
 
+  const testConnectivity = async (ip: string, port: number): Promise<boolean> => {
+    try {
+      return await invoke<boolean>("test_device_connectivity", { ip, port });
+    } catch {
+      return false;
+    }
+  };
+
+  const findReachableIp = async (deviceId: string): Promise<string | null> => {
+    try {
+      return await invoke<string | null>("find_reachable_device_ip", { deviceId });
+    } catch {
+      return null;
+    }
+  };
+
   const fetchDevices = async () => {
     try {
       const result = await invoke<Device[]>("get_discovered_devices");
-      // Check trust status for each
+      // Check trust status and connectivity for each device
       for (const device of result) {
         device.isTrusted = await invoke("is_device_trusted", {
           deviceId: device.id,
         });
+        // Test connectivity to primary IP
+        device.isReachable = await testConnectivity(device.ip, device.port);
       }
       devices.value = result;
     } catch (e) {
@@ -60,5 +80,7 @@ export function useDevices() {
     isDiscovering,
     error,
     refreshDevices: fetchDevices,
+    testConnectivity,
+    findReachableIp,
   };
 }
