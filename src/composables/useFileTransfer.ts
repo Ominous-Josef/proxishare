@@ -21,6 +21,7 @@ export function useFileTransfer() {
     ip: string,
     port: number
   ) => {
+    console.log("[FileTransfer] Invoking send_file:", { ip, port, path: filePath });
     try {
       // In a more robust version, we'd add it to 'transfers' first as pending
       await invoke("send_file", {
@@ -28,8 +29,10 @@ export function useFileTransfer() {
         port,
         path: filePath,
       });
+      console.log("[FileTransfer] send_file completed successfully");
     } catch (e) {
-      console.error("Failed to send file:", e);
+      console.error("[FileTransfer] Failed to send file:", e);
+      throw e;
     }
   };
 

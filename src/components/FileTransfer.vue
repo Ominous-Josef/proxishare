@@ -11,15 +11,32 @@ const props = defineProps<{
 const { transfers, sendFile } = useFileTransfer();
 
 const selectAndSend = async () => {
-  if (!props.deviceId || !props.targetIp || !props.targetPort) return;
+  if (!props.deviceId || !props.targetIp || !props.targetPort) {
+    console.error("Missing device info:", {
+      deviceId: props.deviceId,
+      targetIp: props.targetIp,
+      targetPort: props.targetPort,
+    });
+    return;
+  }
 
-  const selected = await open({
-    multiple: false,
-    directory: false,
-  });
+  try {
+    console.log("Opening file dialog...");
+    const selected = await open({
+      multiple: false,
+      directory: false,
+    });
 
-  if (selected && typeof selected === "string") {
-    await sendFile(props.deviceId, selected, props.targetIp, props.targetPort);
+    console.log("File selected:", selected);
+
+    if (selected && typeof selected === "string") {
+      console.log("Sending file:", selected, "to", props.targetIp, props.targetPort);
+      await sendFile(props.deviceId, selected, props.targetIp, props.targetPort);
+      console.log("File send initiated");
+    }
+  } catch (error) {
+    console.error("Error selecting/sending file:", error);
+    alert("Failed to select or send file: " + error);
   }
 };
 

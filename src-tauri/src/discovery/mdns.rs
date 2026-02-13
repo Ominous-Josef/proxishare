@@ -7,8 +7,12 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-/// How long before a device is considered stale (30 seconds)
-const DEVICE_TIMEOUT_SECS: i64 = 30;
+/// How long before a device is considered stale (5 minutes)
+/// mDNS doesn't continuously announce, so we need a longer timeout
+const DEVICE_TIMEOUT_SECS: i64 = 300;
+
+/// How often to re-query for devices (seconds)
+const REQUERY_INTERVAL_SECS: u64 = 30;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Device {
@@ -102,92 +106,123 @@ impl DiscoveryService {
     pub fn start_discovery(&self) -> Result<(), Box<dyn std::error::Error>> {
         let service_type = "_proxishare._tcp.local.";
         let receiver = self.mdns.browse(service_type)?;
+        
+        println!("[mDNS] Discovery started, listening for {} services", service_type);
 
         let discovered_devices = Arc::clone(&self.discovered_devices);
         let own_device_id = self.device_id.clone();
 
         tauri::async_runtime::spawn(async move {
-            while let Ok(event) = receiver.recv_async().await {
-                match event {
-                    ServiceEvent::ServiceResolved(info) => {
-                        let id = info
-                            .get_property_val_str("id")
-                            .unwrap_or("unknown")
-                            .to_string();
-                        if id == own_device_id {
-                            continue;
-                        }
+            println!("[mDNS] Event loop started");
+            loop {
+                match receiver.recv_async().await {
+                    Ok(event) => {
+                        match event {
+                            ServiceEvent::ServiceResolved(info) => {
+                                let id = info
+                                    .get_property_val_str("id")
+                                    .unwrap_or("unknown")
+                                    .to_string();
+                                if id == own_device_id {
+                                    continue;
+                                }
 
-                        let name = info
-                            .get_property_val_str("name")
-                            .unwrap_or("Unknown Device")
-                            .to_string();
+                                let name = info
+                                    .get_property_val_str("name")
+                                    .unwrap_or("Unknown Device")
+                                    .to_string();
                         
-                        // Collect all IP addresses from mDNS response
-                        let mut all_ips: Vec<String> = info
-                            .get_addresses()
-                            .iter()
-                            .map(|ip| ip.to_string())
-                            .collect();
+                                // Collect all IP addresses from mDNS response
+                                let mut all_ips: Vec<String> = info
+                                    .get_addresses()
+                                    .iter()
+                                    .map(|ip| ip.to_string())
+                                    .collect();
                         
-                        // Also include IPs from properties (for cross-interface discovery)
-                        if let Some(ips_str) = info.get_property_val_str("ips") {
-                            for ip in ips_str.split(',') {
-                                let ip = ip.trim().to_string();
-                                if !ip.is_empty() && !all_ips.contains(&ip) {
-                                    all_ips.push(ip);
+                                // Also include IPs from properties (for cross-interface discovery)
+                                if let Some(ips_str) = info.get_property_val_str("ips") {
+                                    for ip in ips_str.split(',') {
+                                        let ip = ip.trim().to_string();
+                                        if !ip.is_empty() && !all_ips.contains(&ip) {
+                                            all_ips.push(ip);
+                                        }
+                                    }
+                                }
+                        
+                                // Select the best IP (prefer IPv4, then local network ranges)
+                                let ip = select_best_ip(info.get_addresses())
+                                    .unwrap_or_else(|| all_ips.first().cloned().unwrap_or_default());
+                        
+                                let port = info.get_port();
+                        
+                                println!("[mDNS] Discovered device: {} ({}) - IPs: {:?}", name, id, all_ips);
+
+                                let mut devices = discovered_devices.write().await;
+                                devices.insert(
+                                    id.clone(),
+                                    Device {
+                                        id,
+                                        name,
+                                        ip,
+                                        all_ips,
+                                        port,
+                                        last_seen: Utc::now().timestamp(),
+                                    },
+                                );
+                            }
+                            ServiceEvent::ServiceRemoved(_type, name) => {
+                                // Remove device when service is explicitly removed
+                                let mut devices = discovered_devices.write().await;
+                                // Try to find and remove by matching the instance name prefix
+                                let id_to_remove: Option<String> = devices.iter()
+                                    .find(|(_, d)| name.contains(&d.id[..8]))
+                                    .map(|(id, _)| id.clone());
+                                if let Some(id) = id_to_remove {
+                                    devices.remove(&id);
+                                    println!("[mDNS] Device removed: {}", name);
                                 }
                             }
-                        }
-                        
-                        // Select the best IP (prefer IPv4, then local network ranges)
-                        let ip = select_best_ip(info.get_addresses())
-                            .unwrap_or_else(|| all_ips.first().cloned().unwrap_or_default());
-                        
-                        let port = info.get_port();
-                        
-                        println!("[mDNS] Discovered device: {} ({}) - IPs: {:?}", name, id, all_ips);
-
-                        let mut devices = discovered_devices.write().await;
-                        devices.insert(
-                            id.clone(),
-                            Device {
-                                id,
-                                name,
-                                ip,
-                                all_ips,
-                                port,
-                                last_seen: Utc::now().timestamp(),
-                            },
-                        );
-                    }
-                    ServiceEvent::ServiceRemoved(_type, name) => {
-                        // Remove device when service is explicitly removed
-                        let mut devices = discovered_devices.write().await;
-                        // Try to find and remove by matching the instance name prefix
-                        let id_to_remove: Option<String> = devices.iter()
-                            .find(|(_, d)| name.contains(&d.id[..8]))
-                            .map(|(id, _)| id.clone());
-                        if let Some(id) = id_to_remove {
-                            devices.remove(&id);
-                            println!("Device removed: {}", name);
+                            _ => {}
                         }
                     }
-                    _ => {}
+                    Err(e) => {
+                        println!("[mDNS] Event loop error: {:?}, continuing...", e);
+                        // Small delay before continuing to avoid busy loop on persistent errors
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
                 }
             }
         });
 
-        // Start a background task to clean up stale devices
+        // Start a background task to clean up stale devices and re-query
         let cleanup_devices = Arc::clone(&self.discovered_devices);
+        let mdns_for_requery = self.mdns.clone();
         tauri::async_runtime::spawn(async move {
+            let mut requery_counter = 0u64;
             loop {
                 tokio::time::sleep(Duration::from_secs(10)).await;
+                
+                // Clean up stale devices
                 let now = Utc::now().timestamp();
                 let mut devices = cleanup_devices.write().await;
-                devices.retain(|_, device| {
-                    now - device.last_seen < DEVICE_TIMEOUT_SECS
+                let before_count = devices.len();
+                devices.retain(|id, device| {
+                    let keep = now - device.last_seen < DEVICE_TIMEOUT_SECS;
+                    if !keep {
+                        println!("[mDNS] Removing stale device: {} (last seen {}s ago)", id, now - device.last_seen);
+                    }
+                    keep
                 });
+                drop(devices);
+                
+                // Re-query every REQUERY_INTERVAL_SECS to refresh device list
+                requery_counter += 10;
+                if requery_counter >= REQUERY_INTERVAL_SECS {
+                    requery_counter = 0;
+                    println!("[mDNS] Re-querying for devices...");
+                    // Trigger a new query by browsing again (mdns-sd handles deduplication)
+                    let _ = mdns_for_requery.browse("_proxishare._tcp.local.");
+                }
             }
         });
 
