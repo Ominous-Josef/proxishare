@@ -1,8 +1,8 @@
 use crate::transfer::protocol::MessageType;
-use quinn::Connection;
+use quinn::{Connection, RecvStream, SendStream};
 use std::path::PathBuf;
 use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use tauri::Emitter;
 
@@ -39,11 +39,14 @@ impl FileReceiver {
     }
 
     pub async fn handle_transfer(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Accept the single bidirectional stream from the sender
+        let (mut send_stream, mut recv_stream) = self.connection.accept_bi().await?;
+
         let mut file: Option<File> = None;
         let mut _bytes_received: u64 = 0;
 
         loop {
-            let msg = self.receive_message().await?;
+            let msg = Self::read_message(&mut recv_stream).await?;
             match msg {
                 MessageType::FileOffer {
                     transfer_id: _,
@@ -66,8 +69,8 @@ impl FileReceiver {
                     file = Some(File::from_std(std_file));
                 }
                 MessageType::ChunkData {
-                    transfer_id,
-                    chunk_index,
+                    transfer_id: _,
+                    chunk_index: _,
                     data,
                     chunk_hash,
                 } => {
@@ -75,37 +78,24 @@ impl FileReceiver {
                         // Verify chunk
                         let actual_hash = blake3::hash(&data).to_hex().to_string();
                         if actual_hash != chunk_hash {
-                            match self
-                                .send_message(&MessageType::TransferError {
-                                    transfer_id: transfer_id.clone(),
-                                    message: "Hash mismatch".to_string(),
-                                })
-                                .await
-                            {
-                                _ => return Err("Chunk hash mismatch".into()),
-                            }
+                            return Err("Chunk hash mismatch".into());
                         }
 
                         f.write_all(&data).await?;
                         _bytes_received += data.len() as u64;
-
-                        // Acknowledge
-                        self.send_message(&MessageType::ChunkAck {
-                            transfer_id,
-                            chunk_index,
-                        })
-                        .await?;
                     }
                 }
                 MessageType::TransferComplete { transfer_id } => {
                     if let Some(mut f) = file.take() {
                         f.flush().await?;
                     }
-                    // Send acknowledgment before breaking so sender knows we're done
-                    self.send_message(&MessageType::TransferCompleteAck {
-                        transfer_id,
-                    })
+                    // Send acknowledgment on the same stream
+                    Self::write_message(
+                        &mut send_stream,
+                        &MessageType::TransferCompleteAck { transfer_id },
+                    )
                     .await?;
+                    send_stream.finish()?;
                     break;
                 }
                 MessageType::PairRequest {
@@ -127,26 +117,28 @@ impl FileReceiver {
         Ok(())
     }
 
-    async fn receive_message(&self) -> Result<MessageType, Box<dyn std::error::Error>> {
-        let (_, mut recv) = self.connection.accept_bi().await?;
+    async fn read_message(
+        stream: &mut RecvStream,
+    ) -> Result<MessageType, Box<dyn std::error::Error>> {
         let mut len_buf = [0u8; 4];
-        recv.read_exact(&mut len_buf).await?;
+        stream.read_exact(&mut len_buf).await?;
         let len = u32::from_be_bytes(len_buf) as usize;
 
         let mut data = vec![0u8; len];
-        recv.read_exact(&mut data).await?;
+        stream.read_exact(&mut data).await?;
 
         let msg = bincode::deserialize(&data)?;
         Ok(msg)
     }
 
-    async fn send_message(&self, msg: &MessageType) -> Result<(), Box<dyn std::error::Error>> {
-        let (mut send, _) = self.connection.open_bi().await?;
+    async fn write_message(
+        stream: &mut SendStream,
+        msg: &MessageType,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let data = bincode::serialize(msg)?;
         let len = data.len() as u32;
-        send.write_all(&len.to_be_bytes()).await?;
-        send.write_all(&data).await?;
-        send.finish().map_err(|e| e.to_string())?;
+        stream.write_all(&len.to_be_bytes()).await?;
+        stream.write_all(&data).await?;
         Ok(())
     }
 }
