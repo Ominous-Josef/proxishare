@@ -112,10 +112,43 @@ impl FileSender {
         }
 
         // 4. Send Completion
-        self.send_message(&MessageType::TransferComplete { transfer_id })
-            .await?;
+        self.send_message(&MessageType::TransferComplete {
+            transfer_id: transfer_id.clone(),
+        })
+        .await?;
 
-        Ok(())
+        // 5. Wait for acknowledgment from receiver before closing connection
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.wait_for_complete_ack(&transfer_id),
+        )
+        .await
+        {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(format!("Failed to receive completion ack: {}", e).into()),
+            Err(_) => Err("Timeout waiting for transfer completion acknowledgment".into()),
+        }
+    }
+
+    async fn wait_for_complete_ack(
+        &self,
+        expected_transfer_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, mut recv) = self.connection.accept_bi().await?;
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf).await?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+
+        let mut data = vec![0u8; len];
+        recv.read_exact(&mut data).await?;
+
+        let msg: MessageType = bincode::deserialize(&data)?;
+        match msg {
+            MessageType::TransferCompleteAck { transfer_id } if transfer_id == expected_transfer_id => {
+                Ok(())
+            }
+            _ => Err("Unexpected message while waiting for completion ack".into()),
+        }
     }
 
     async fn send_message(&self, msg: &MessageType) -> Result<(), Box<dyn std::error::Error>> {

@@ -42,6 +42,7 @@ pub enum MessageType {
 
     // Completion
     TransferComplete { transfer_id: String },
+    TransferCompleteAck { transfer_id: String },
     TransferError { transfer_id: String, message: String },
 
     // Pairing

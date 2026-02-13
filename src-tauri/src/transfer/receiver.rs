@@ -97,10 +97,15 @@ impl FileReceiver {
                         .await?;
                     }
                 }
-                MessageType::TransferComplete { .. } => {
+                MessageType::TransferComplete { transfer_id } => {
                     if let Some(mut f) = file.take() {
                         f.flush().await?;
                     }
+                    // Send acknowledgment before breaking so sender knows we're done
+                    self.send_message(&MessageType::TransferCompleteAck {
+                        transfer_id,
+                    })
+                    .await?;
                     break;
                 }
                 MessageType::PairRequest {
