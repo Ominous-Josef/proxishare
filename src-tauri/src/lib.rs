@@ -77,6 +77,38 @@ async fn is_device_trusted(
 }
 
 #[tauri::command]
+async fn test_device_connectivity(
+    ip: String,
+    port: u16,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let discovery_lock = state.discovery.read().await;
+    if let Some(discovery) = &*discovery_lock {
+        Ok(discovery.test_connectivity(&ip, port).await)
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+async fn find_reachable_device_ip(
+    device_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let discovery_lock = state.discovery.read().await;
+    if let Some(discovery) = &*discovery_lock {
+        let devices = discovery.get_devices().await;
+        if let Some(device) = devices.iter().find(|d| d.id == device_id) {
+            Ok(discovery.find_reachable_ip(device).await)
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
 async fn request_pairing(
     _state: tauri::State<'_, AppState>,
     _device_id: String,
@@ -183,6 +215,8 @@ pub fn run() {
             send_file,
             get_trusted_devices,
             is_device_trusted,
+            test_device_connectivity,
+            find_reachable_device_ip,
             request_pairing,
             accept_pairing,
             set_sync_folder,

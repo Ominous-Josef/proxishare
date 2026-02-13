@@ -5,7 +5,28 @@ use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
-pub const CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4MB
+/// Maximum chunk size (4MB) - used for large files
+const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
+/// Minimum chunk size (64KB) - used for small files or slow connections
+const MIN_CHUNK_SIZE: usize = 64 * 1024;
+/// Default chunk size (1MB) - balanced for most scenarios
+const DEFAULT_CHUNK_SIZE: usize = 1 * 1024 * 1024;
+
+/// Calculate optimal chunk size based on file size
+/// Smaller files use smaller chunks to reduce overhead
+/// Larger files use larger chunks for efficiency
+fn calculate_chunk_size(file_size: u64) -> usize {
+    if file_size < 1024 * 1024 {
+        // Files < 1MB: use 64KB chunks
+        MIN_CHUNK_SIZE
+    } else if file_size < 100 * 1024 * 1024 {
+        // Files < 100MB: use 1MB chunks
+        DEFAULT_CHUNK_SIZE
+    } else {
+        // Large files: use 4MB chunks
+        MAX_CHUNK_SIZE
+    }
+}
 
 pub struct FileSender {
     connection: Connection,
@@ -46,6 +67,9 @@ impl FileSender {
         let file_size = metadata.len();
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
         let file_hash = self.calculate_hash(&path).await?;
+        
+        // Calculate optimal chunk size based on file size
+        let chunk_size = calculate_chunk_size(file_size);
 
         // 1. Send File Offer
         let offer = MessageType::FileOffer {
@@ -54,13 +78,13 @@ impl FileSender {
                 name: file_name,
                 size: file_size,
                 hash: file_hash,
-                chunk_size: CHUNK_SIZE as u32,
+                chunk_size: chunk_size as u32,
             },
         };
         self.send_message(&offer).await?;
 
         // 3. Send Chunks
-        let mut buffer = vec![0u8; CHUNK_SIZE];
+        let mut buffer = vec![0u8; chunk_size];
         let mut chunk_index = 0;
         let mut total_sent = 0;
 
