@@ -1,4 +1,5 @@
 use crate::transfer::protocol::MessageType;
+use crate::transfer::sender::TransferProgress;
 use quinn::{Connection, RecvStream, SendStream};
 use std::path::PathBuf;
 use tokio::fs::File;
@@ -43,18 +44,24 @@ impl FileReceiver {
         let (mut send_stream, mut recv_stream) = self.connection.accept_bi().await?;
 
         let mut file: Option<File> = None;
-        let mut _bytes_received: u64 = 0;
+        let mut bytes_received: u64 = 0;
+        let mut current_transfer_id = String::new();
+        let mut current_file_name = String::new();
+        let mut current_file_size: u64 = 0;
 
         loop {
             let msg = Self::read_message(&mut recv_stream).await?;
             match msg {
                 MessageType::FileOffer {
-                    transfer_id: _,
+                    transfer_id,
                     metadata,
                 } => {
                     self.check_disk_space(metadata.size)?;
 
                     let path = self.save_directory.join(&metadata.name);
+                    current_transfer_id = transfer_id;
+                    current_file_name = metadata.name.clone();
+                    current_file_size = metadata.size;
 
                     // Use std::fs to create and allocate to avoid tokio/fs2 complexity
                     let std_file = std::fs::OpenOptions::new()
@@ -82,7 +89,16 @@ impl FileReceiver {
                         }
 
                         f.write_all(&data).await?;
-                        _bytes_received += data.len() as u64;
+                        bytes_received += data.len() as u64;
+                        
+                        // Emit progress event
+                        let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                            transfer_id: current_transfer_id.clone(),
+                            file_name: current_file_name.clone(),
+                            bytes_sent: bytes_received,
+                            total_bytes: current_file_size,
+                            direction: "receive".to_string(),
+                        });
                     }
                 }
                 MessageType::TransferComplete { transfer_id } => {

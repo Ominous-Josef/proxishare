@@ -122,20 +122,21 @@ const formatBytes = (bytes: number) => {
           <p>No active transfers</p>
         </div>
 
-        <div v-for="t in transfers" :key="t.id" class="transfer-item">
+        <div v-for="t in transfers" :key="t.id" class="transfer-item" :class="t.direction">
           <div class="item-header">
-            <span class="filename">{{ t.fileName }}</span>
-            <span class="status">{{ t.status }}</span>
+            <div class="filename-row">
+              <span class="direction-icon" v-if="t.direction === 'send'">↑</span>
+              <span class="direction-icon" v-else>↓</span>
+              <span class="filename">{{ t.fileName }}</span>
+            </div>
+            <span class="percentage">{{ t.progress }}%</span>
           </div>
           <div class="progress-bar">
-            <div class="fill" :style="{ width: t.progress + '%' }"></div>
+            <div class="fill" :class="t.direction" :style="{ width: t.progress + '%' }"></div>
           </div>
           <div class="item-meta">
-            <span
-              >{{ formatBytes(t.bytesTransferred) }} /
-              {{ formatBytes(t.totalBytes) }}</span
-            >
-            <span v-if="t.speed">{{ formatBytes(t.speed) }}/s</span>
+            <span>{{ formatBytes(t.bytesTransferred) }} / {{ formatBytes(t.totalBytes) }}</span>
+            <span class="status-label">{{ t.direction === 'send' ? 'Uploading' : 'Downloading' }}</span>
           </div>
         </div>
       </div>
@@ -229,24 +230,52 @@ const formatBytes = (bytes: number) => {
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+.transfer-item.send {
+  border-left: 3px solid #6366f1;
+}
+
+.transfer-item.receive {
+  border-left: 3px solid #22c55e;
+}
+
 .item-header {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   margin-bottom: 8px;
+}
+
+.filename-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 70%;
+}
+
+.direction-icon {
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.transfer-item.send .direction-icon {
+  color: #6366f1;
+}
+
+.transfer-item.receive .direction-icon {
+  color: #22c55e;
 }
 
 .filename {
   font-weight: 500;
-  max-width: 70%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.status {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  color: #94a3b8;
+.percentage {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #e0e0e0;
 }
 
 .progress-bar {
@@ -262,12 +291,26 @@ const formatBytes = (bytes: number) => {
   transition: width 0.3s ease;
 }
 
+.fill.send {
+  background: linear-gradient(90deg, #6366f1, #818cf8);
+}
+
+.fill.receive {
+  background: linear-gradient(90deg, #22c55e, #4ade80);
+}
+
 .item-meta {
   display: flex;
   justify-content: space-between;
   margin-top: 8px;
   font-size: 0.8rem;
   color: #94a3b8;
+}
+
+.status-label {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.5px;
 }
 
 .empty {

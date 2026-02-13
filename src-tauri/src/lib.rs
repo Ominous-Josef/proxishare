@@ -86,10 +86,9 @@ async fn send_file(
     
     let transfer_lock = state.transfer.read().await;
     if let Some(tm) = &*transfer_lock {
-        let (tx, _rx) = tokio::sync::mpsc::channel(100);
         // Convert result to Send-compatible type immediately
         let send_result: Result<(), String> = tm
-            .send_file(ip.clone(), port, file_path, tx)
+            .send_file(ip.clone(), port, file_path)
             .await
             .map_err(|e| e.to_string());
         

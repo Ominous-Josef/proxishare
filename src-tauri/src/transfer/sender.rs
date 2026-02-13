@@ -1,7 +1,9 @@
 use crate::transfer::protocol::{FileMetadata, MessageType};
 use bincode;
 use quinn::{Connection, RecvStream, SendStream};
+use serde::Serialize;
 use std::path::PathBuf;
+use tauri::Emitter;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
@@ -11,6 +13,15 @@ const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
 const MIN_CHUNK_SIZE: usize = 64 * 1024;
 /// Default chunk size (1MB) - balanced for most scenarios
 const DEFAULT_CHUNK_SIZE: usize = 1 * 1024 * 1024;
+
+#[derive(Clone, Serialize)]
+pub struct TransferProgress {
+    pub transfer_id: String,
+    pub file_name: String,
+    pub bytes_sent: u64,
+    pub total_bytes: u64,
+    pub direction: String,
+}
 
 /// Calculate optimal chunk size based on file size
 /// Smaller files use smaller chunks to reduce overhead
@@ -30,17 +41,18 @@ fn calculate_chunk_size(file_size: u64) -> usize {
 
 pub struct FileSender {
     connection: Connection,
+    app_handle: tauri::AppHandle,
 }
 
 impl FileSender {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: Connection, app_handle: tauri::AppHandle) -> Self {
+        Self { connection, app_handle }
     }
 
     pub async fn calculate_hash(
         &self,
         path: &PathBuf,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut file = File::open(path).await?;
         let mut hasher = blake3::Hasher::new();
         let mut buffer = vec![0u8; 64 * 1024];
@@ -60,8 +72,7 @@ impl FileSender {
         &self,
         transfer_id: String,
         path: PathBuf,
-        progress_tx: tokio::sync::mpsc::Sender<u64>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Open a single bidirectional stream for the entire transfer
         let (mut send_stream, mut recv_stream) = self.connection.open_bi().await?;
 
@@ -78,7 +89,7 @@ impl FileSender {
         let offer = MessageType::FileOffer {
             transfer_id: transfer_id.clone(),
             metadata: FileMetadata {
-                name: file_name,
+                name: file_name.clone(),
                 size: file_size,
                 hash: file_hash,
                 chunk_size: chunk_size as u32,
@@ -89,7 +100,7 @@ impl FileSender {
         // 2. Send Chunks
         let mut buffer = vec![0u8; chunk_size];
         let mut chunk_index = 0;
-        let mut total_sent = 0;
+        let mut total_sent: u64 = 0;
 
         loop {
             let n = file.read(&mut buffer).await?;
@@ -111,7 +122,15 @@ impl FileSender {
 
             total_sent += n as u64;
             chunk_index += 1;
-            let _ = progress_tx.send(total_sent).await;
+            
+            // Emit progress event
+            let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                transfer_id: transfer_id.clone(),
+                file_name: file_name.clone(),
+                bytes_sent: total_sent,
+                total_bytes: file_size,
+                direction: "send".to_string(),
+            });
         }
 
         // 3. Send Completion
@@ -147,7 +166,7 @@ impl FileSender {
     async fn write_message(
         stream: &mut SendStream,
         msg: &MessageType,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let data = bincode::serialize(msg)?;
         let len = data.len() as u32;
         stream.write_all(&len.to_be_bytes()).await?;
@@ -157,7 +176,7 @@ impl FileSender {
 
     async fn read_message(
         stream: &mut RecvStream,
-    ) -> Result<MessageType, Box<dyn std::error::Error>> {
+    ) -> Result<MessageType, Box<dyn std::error::Error + Send + Sync>> {
         let mut len_buf = [0u8; 4];
         stream.read_exact(&mut len_buf).await?;
         let len = u32::from_be_bytes(len_buf) as usize;

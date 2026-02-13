@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ref } from "vue";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { onUnmounted, ref } from "vue";
 
 export interface Transfer {
   id: string;
@@ -9,7 +10,16 @@ export interface Transfer {
   bytesTransferred: number;
   progress: number;
   status: "pending" | "in_progress" | "completed" | "failed";
+  direction: "send" | "receive";
   speed?: number;
+}
+
+export interface TransferProgress {
+  transfer_id: string;
+  file_name: string;
+  bytes_sent: number;
+  total_bytes: number;
+  direction: string;
 }
 
 export interface TransferRecord {
@@ -28,8 +38,55 @@ export interface TransferRecord {
 }
 
 export function useFileTransfer() {
+  const activeTransfers = ref<Map<string, Transfer>>(new Map());
   const transfers = ref<Transfer[]>([]);
   const history = ref<TransferRecord[]>([]);
+  let unlistenProgress: UnlistenFn | null = null;
+
+  // Setup progress listener
+  const setupProgressListener = async () => {
+    if (unlistenProgress) return; // Already listening
+    
+    unlistenProgress = await listen<TransferProgress>("transfer-progress", (event) => {
+      const progress = event.payload;
+      const percent = progress.total_bytes > 0 
+        ? Math.round((progress.bytes_sent / progress.total_bytes) * 100) 
+        : 0;
+      
+      const transfer: Transfer = {
+        id: progress.transfer_id,
+        deviceId: "",
+        fileName: progress.file_name,
+        totalBytes: progress.total_bytes,
+        bytesTransferred: progress.bytes_sent,
+        progress: percent,
+        status: percent >= 100 ? "completed" : "in_progress",
+        direction: progress.direction as "send" | "receive",
+      };
+      
+      activeTransfers.value.set(progress.transfer_id, transfer);
+      transfers.value = Array.from(activeTransfers.value.values());
+      
+      // Remove completed transfers after a delay
+      if (percent >= 100) {
+        setTimeout(() => {
+          activeTransfers.value.delete(progress.transfer_id);
+          transfers.value = Array.from(activeTransfers.value.values());
+        }, 3000);
+      }
+    });
+  };
+
+  // Auto-setup listener
+  setupProgressListener();
+
+  // Cleanup on unmount
+  onUnmounted(() => {
+    if (unlistenProgress) {
+      unlistenProgress();
+      unlistenProgress = null;
+    }
+  });
 
   const sendFile = async (
     deviceId: string,
