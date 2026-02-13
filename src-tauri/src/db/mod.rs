@@ -1,14 +1,15 @@
 pub mod schema;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
+use sqlx::{sqlite::SqlitePoolOptions, FromRow, Pool, Sqlite};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct TransferRecord {
     pub id: String,
     pub device_id: String,
+    #[sqlx(default)]
     pub device_name: Option<String>,
     pub file_name: String,
     pub file_path: String,
@@ -109,19 +110,18 @@ impl Database {
         &self,
         limit: i32,
     ) -> Result<Vec<TransferRecord>, sqlx::Error> {
-        let records = sqlx::query_as!(
-            TransferRecord,
+        let records = sqlx::query_as::<_, TransferRecord>(
             r#"
             SELECT 
-                id, device_id, NULL as "device_name: _", file_name, file_path, 
+                id, device_id, NULL as device_name, file_name, file_path, 
                 total_size, direction, status, bytes_transferred, file_hash, 
                 created_at, updated_at
             FROM transfers 
             ORDER BY created_at DESC 
             LIMIT ?
             "#,
-            limit
         )
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
@@ -133,11 +133,10 @@ impl Database {
         device_id: &str,
         limit: i32,
     ) -> Result<Vec<TransferRecord>, sqlx::Error> {
-        let records = sqlx::query_as!(
-            TransferRecord,
+        let records = sqlx::query_as::<_, TransferRecord>(
             r#"
             SELECT 
-                id, device_id, NULL as "device_name: _", file_name, file_path, 
+                id, device_id, NULL as device_name, file_name, file_path, 
                 total_size, direction, status, bytes_transferred, file_hash, 
                 created_at, updated_at
             FROM transfers 
@@ -145,9 +144,9 @@ impl Database {
             ORDER BY created_at DESC 
             LIMIT ?
             "#,
-            device_id,
-            limit
         )
+        .bind(device_id)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 

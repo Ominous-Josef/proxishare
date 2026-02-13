@@ -6,6 +6,7 @@ import DeviceList from "./components/DeviceList.vue";
 import FileTransfer from "./components/FileTransfer.vue";
 import PairingDialog from "./components/PairingDialog.vue";
 import SyncSettings from "./components/SyncSettings.vue";
+import TransferHistory from "./components/TransferHistory.vue";
 import { useDevices, type Device } from "./composables/useDevices";
 
 const { devices, isDiscovering, refreshDevices } = useDevices();
@@ -127,6 +128,12 @@ onMounted(async () => {
           :target-ip="selectedDevice.ip"
           :target-port="selectedDevice.port"
         />
+        <TransferHistory
+          v-if="selectedDevice"
+          :device-id="selectedId"
+          :device-name="selectedDevice.name"
+          style="margin-top: 20px;"
+        />
         <div v-else class="hero">
           <div class="hero-icon">
             <svg
@@ -145,6 +152,8 @@ onMounted(async () => {
           </div>
           <h2>Ready to Share</h2>
           <p>Files stay on your network. No cloud. No limits.</p>
+          
+          <TransferHistory style="margin-top: 40px; width: 100%; max-width: 500px;" />
         </div>
       </section>
     </main>

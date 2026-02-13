@@ -87,18 +87,24 @@ async fn send_file(
     let transfer_lock = state.transfer.read().await;
     if let Some(tm) = &*transfer_lock {
         let (tx, _rx) = tokio::sync::mpsc::channel(100);
-        let result = tm.send_file(ip.clone(), port, file_path, tx).await;
+        // Convert result to Send-compatible type immediately
+        let send_result: Result<(), String> = tm
+            .send_file(ip.clone(), port, file_path, tx)
+            .await
+            .map_err(|e| e.to_string());
+        
+        let is_success = send_result.is_ok();
         
         // Update transfer status
         {
             let db_lock = state.database.read().await;
             if let Some(db) = &*db_lock {
-                let status = if result.is_ok() { "completed" } else { "failed" };
+                let status = if is_success { "completed" } else { "failed" };
                 let _ = db.update_transfer_status(&transfer_id, status, file_size).await;
             }
         }
         
-        match result {
+        match send_result {
             Ok(_) => {
                 println!("[Command] send_file completed successfully");
                 Ok(())
