@@ -2,7 +2,7 @@ use crate::transfer::protocol::MessageType;
 use quinn::{Connection, RecvStream, SendStream};
 use std::path::PathBuf;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use tauri::Emitter;
 
@@ -86,16 +86,29 @@ impl FileReceiver {
                     }
                 }
                 MessageType::TransferComplete { transfer_id } => {
+                    println!("[Transfer] Received TransferComplete, flushing file...");
                     if let Some(mut f) = file.take() {
                         f.flush().await?;
                     }
+                    println!("[Transfer] Sending TransferCompleteAck...");
                     // Send acknowledgment on the same stream
                     Self::write_message(
                         &mut send_stream,
                         &MessageType::TransferCompleteAck { transfer_id },
                     )
                     .await?;
+                    println!("[Transfer] Finishing send stream...");
                     send_stream.finish()?;
+                    
+                    // Wait for sender to close the connection gracefully
+                    // This ensures they received our ack before we drop the connection
+                    println!("[Transfer] Waiting for sender to close connection...");
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        recv_stream.read_to_end(1024),
+                    ).await;
+                    
+                    println!("[Transfer] Transfer complete, breaking loop");
                     break;
                 }
                 MessageType::PairRequest {

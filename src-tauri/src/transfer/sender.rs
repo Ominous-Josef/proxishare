@@ -3,7 +3,7 @@ use bincode;
 use quinn::{Connection, RecvStream, SendStream};
 use std::path::PathBuf;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 
 /// Maximum chunk size (4MB) - used for large files
 const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
