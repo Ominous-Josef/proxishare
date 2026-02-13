@@ -2,6 +2,8 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useFileTransfer } from "../composables/useFileTransfer";
 
+import { ref } from "vue";
+
 const props = defineProps<{
   deviceId: string | null;
   targetIp: string | null;
@@ -9,6 +11,8 @@ const props = defineProps<{
 }>();
 
 const { transfers, sendFile } = useFileTransfer();
+const isSending = ref(false);
+const statusMessage = ref<string | null>(null);
 
 const selectAndSend = async () => {
   if (!props.deviceId || !props.targetIp || !props.targetPort) {
@@ -17,6 +21,7 @@ const selectAndSend = async () => {
       targetIp: props.targetIp,
       targetPort: props.targetPort,
     });
+    statusMessage.value = "Error: No device selected";
     return;
   }
 
@@ -30,13 +35,19 @@ const selectAndSend = async () => {
     console.log("File selected:", selected);
 
     if (selected && typeof selected === "string") {
+      isSending.value = true;
+      statusMessage.value = "Sending file...";
       console.log("Sending file:", selected, "to", props.targetIp, props.targetPort);
       await sendFile(props.deviceId, selected, props.targetIp, props.targetPort);
-      console.log("File send initiated");
+      console.log("File send completed");
+      statusMessage.value = "File sent successfully!";
+      setTimeout(() => { statusMessage.value = null; }, 3000);
     }
   } catch (error) {
     console.error("Error selecting/sending file:", error);
-    alert("Failed to select or send file: " + error);
+    statusMessage.value = "Failed: " + String(error);
+  } finally {
+    isSending.value = false;
   }
 };
 
@@ -80,8 +91,9 @@ const formatBytes = (bytes: number) => {
 
     <div class="transfer-body">
       <div class="actions">
-        <button class="select-btn" :disabled="!deviceId" @click="selectAndSend">
+        <button class="select-btn" :disabled="!deviceId || isSending" @click="selectAndSend">
           <svg
+            v-if="!isSending"
             xmlns="http://www.w3.org/2000/svg"
             width="20"
             height="20"
@@ -96,8 +108,13 @@ const formatBytes = (bytes: number) => {
             <polyline points="17 8 12 3 7 8"></polyline>
             <line x1="12" y1="3" x2="12" y2="15"></line>
           </svg>
-          Select File to Send
+          <span v-else class="spinner-small"></span>
+          {{ isSending ? 'Sending...' : 'Select File to Send' }}
         </button>
+      </div>
+
+      <div v-if="statusMessage" class="status-message" :class="{ error: statusMessage.startsWith('Failed') || statusMessage.startsWith('Error'), success: statusMessage.includes('success') }">
+        {{ statusMessage }}
       </div>
 
       <div class="transfer-list">
@@ -259,5 +276,40 @@ const formatBytes = (bytes: number) => {
   color: #64748b;
   border: 2px dashed rgba(255, 255, 255, 0.05);
   border-radius: 12px;
+}
+
+.status-message {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  background: rgba(99, 102, 241, 0.1);
+  color: #94a3b8;
+}
+
+.status-message.success {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+}
+
+.status-message.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.spinner-small {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: #fff;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

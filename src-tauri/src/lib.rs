@@ -49,15 +49,26 @@ async fn send_file(
     port: u16,
     path: String,
 ) -> Result<(), String> {
+    println!("[Command] send_file called: {} to {}:{}", path, ip, port);
+    
     let transfer_lock = state.transfer.read().await;
     if let Some(tm) = &*transfer_lock {
         let (tx, _rx) = tokio::sync::mpsc::channel(100);
-        tm.send_file(ip, port, PathBuf::from(path), tx)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        match tm.send_file(ip.clone(), port, PathBuf::from(&path), tx).await {
+            Ok(_) => {
+                println!("[Command] send_file completed successfully");
+                Ok(())
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to send file: {}", e);
+                println!("[Command] {}", error_msg);
+                Err(error_msg)
+            }
+        }
     } else {
-        Err("Transfer manager not initialized".to_string())
+        let error_msg = "Transfer manager not initialized".to_string();
+        println!("[Command] {}", error_msg);
+        Err(error_msg)
     }
 }
 
@@ -134,11 +145,27 @@ fn get_local_network_interfaces() -> Vec<NetworkInterface> {
 
 #[tauri::command]
 async fn request_pairing(
-    _state: tauri::State<'_, AppState>,
-    _device_id: String,
-    _ip: String,
-    _port: u16,
+    state: tauri::State<'_, AppState>,
+    device_id: String,
+    ip: String,
+    port: u16,
 ) -> Result<(), String> {
+    println!("[Pairing] Sending pairing request to {} ({}:{})", device_id, ip, port);
+    
+    // Get our device info for the pairing request
+    let discovery_lock = state.discovery.read().await;
+    let _my_id = discovery_lock.as_ref()
+        .map(|d| d.get_my_id())
+        .unwrap_or_else(|| "unknown".to_string());
+    drop(discovery_lock);
+    
+    // For now, just trust the device directly (simplified pairing)
+    // In a full implementation, we'd send a pairing request over the network
+    // and wait for the other device to accept
+    let mut security = state.security.write().await;
+    security.add_trusted(device_id.clone()).map_err(|e| e.to_string())?;
+    
+    println!("[Pairing] Device {} added to trusted devices", device_id);
     Ok(())
 }
 
@@ -147,8 +174,10 @@ async fn accept_pairing(
     device_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    println!("[Pairing] Accepting pairing for device: {}", device_id);
     let mut security = state.security.write().await;
-    security.add_trusted(device_id).map_err(|e| e.to_string())?;
+    security.add_trusted(device_id.clone()).map_err(|e| e.to_string())?;
+    println!("[Pairing] Device {} is now trusted", device_id);
     Ok(())
 }
 

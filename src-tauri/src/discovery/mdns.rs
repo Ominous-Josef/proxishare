@@ -205,7 +205,7 @@ impl DiscoveryService {
                 // Clean up stale devices
                 let now = Utc::now().timestamp();
                 let mut devices = cleanup_devices.write().await;
-                let before_count = devices.len();
+                let _before_count = devices.len();
                 devices.retain(|id, device| {
                     let keep = now - device.last_seen < DEVICE_TIMEOUT_SECS;
                     if !keep {

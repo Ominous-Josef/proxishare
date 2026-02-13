@@ -4,10 +4,11 @@ import { listen } from "@tauri-apps/api/event";
 import { computed, onMounted, ref } from "vue";
 import DeviceList from "./components/DeviceList.vue";
 import FileTransfer from "./components/FileTransfer.vue";
+import PairingDialog from "./components/PairingDialog.vue";
 import SyncSettings from "./components/SyncSettings.vue";
 import { useDevices, type Device } from "./composables/useDevices";
 
-const { devices, isDiscovering } = useDevices();
+const { devices, isDiscovering, refreshDevices } = useDevices();
 const selectedId = ref<string | null>(null);
 
 const pairingRequest = ref<{ device: Device; isOpen: boolean } | null>(null);
@@ -24,14 +25,19 @@ const handlePair = async (id: string) => {
   const device = devices.value.find((d) => d.id === id);
   if (device) {
     try {
+      console.log("[Pairing] Requesting pairing with device:", id);
       await invoke("request_pairing", {
         deviceId: id,
         ip: device.ip,
         port: device.port,
       });
-      alert("Pairing request sent!");
+      console.log("[Pairing] Pairing successful");
+      alert("Device paired successfully!");
+      // Refresh device list to update trust status
+      await refreshDevices();
     } catch (e) {
-      alert("Failed to send pairing request");
+      console.error("[Pairing] Failed:", e);
+      alert("Failed to pair device: " + e);
     }
   }
 };
@@ -39,13 +45,17 @@ const handlePair = async (id: string) => {
 const handlePairConfirm = async (code: string) => {
   if (pairingRequest.value && code.length === 6) {
     try {
+      console.log("[Pairing] Accepting pairing for device:", pairingRequest.value.device.id);
       await invoke("accept_pairing", {
         deviceId: pairingRequest.value.device.id,
       });
       pairingRequest.value.isOpen = false;
       alert(`Success! Device paired using code ${code}`);
+      // Refresh device list to update trust status
+      await refreshDevices();
     } catch (e) {
-      alert("Failed to pair device");
+      console.error("[Pairing] Accept failed:", e);
+      alert("Failed to pair device: " + e);
     }
   }
 };
