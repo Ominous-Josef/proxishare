@@ -12,26 +12,46 @@ export interface Transfer {
   speed?: number;
 }
 
+export interface TransferRecord {
+  id: string;
+  device_id: string;
+  device_name: string | null;
+  file_name: string;
+  file_path: string;
+  total_size: number;
+  direction: "send" | "receive";
+  status: string;
+  bytes_transferred: number;
+  file_hash: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export function useFileTransfer() {
   const transfers = ref<Transfer[]>([]);
+  const history = ref<TransferRecord[]>([]);
 
   const sendFile = async (
-    _deviceId: string,
+    deviceId: string,
     filePath: string,
     ip: string,
     port: number
   ) => {
-    console.log("[FileTransfer] Invoking send_file:", { ip, port, path: filePath });
+    console.log("[FileTransfer] Invoking send_file:", { deviceId, ip, port, path: filePath });
     try {
-      // In a more robust version, we'd add it to 'transfers' first as pending
       await invoke("send_file", {
+        deviceId,
         ip,
         port,
         path: filePath,
       });
       console.log("[FileTransfer] send_file completed successfully");
+      // Refresh history after successful transfer
+      await loadHistory();
     } catch (e) {
       console.error("[FileTransfer] Failed to send file:", e);
+      // Still refresh history to show failed transfer
+      await loadHistory();
       throw e;
     }
   };
@@ -52,22 +72,57 @@ export function useFileTransfer() {
       const ipToUse = reachableIp || primaryIp;
       
       await invoke("send_file", {
+        deviceId,
         ip: ipToUse,
         port,
         path: filePath,
       });
+      await loadHistory();
     } catch (e) {
       console.error("Failed to send file:", e);
+      await loadHistory();
       throw e;
     }
   };
 
-  // Note: Progress events will be implemented in a future step
-  // by having the Rust backend emit events for the progress_tx channel.
+  const loadHistory = async (limit?: number) => {
+    try {
+      const records = await invoke<TransferRecord[]>("get_transfer_history", { limit: limit ?? 100 });
+      history.value = records;
+    } catch (e) {
+      console.error("Failed to load transfer history:", e);
+    }
+  };
+
+  const loadDeviceHistory = async (deviceId: string, limit?: number) => {
+    try {
+      const records = await invoke<TransferRecord[]>("get_device_transfers", { 
+        deviceId, 
+        limit: limit ?? 50 
+      });
+      return records;
+    } catch (e) {
+      console.error("Failed to load device transfer history:", e);
+      return [];
+    }
+  };
+
+  const clearHistory = async () => {
+    try {
+      await invoke("clear_transfer_history");
+      history.value = [];
+    } catch (e) {
+      console.error("Failed to clear transfer history:", e);
+    }
+  };
 
   return {
     transfers,
+    history,
     sendFile,
     sendFileWithFallback,
+    loadHistory,
+    loadDeviceHistory,
+    clearHistory,
   };
 }

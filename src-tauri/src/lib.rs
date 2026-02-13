@@ -1,8 +1,10 @@
 pub mod crypto;
+pub mod db;
 pub mod discovery;
 pub mod sync;
 pub mod transfer;
 
+use crate::db::{Database, TransferRecord};
 use crate::discovery::mdns::{Device, DiscoveryService, NetworkDiagnostics, get_network_interfaces, NetworkInterface};
 use crate::transfer::TransferManager;
 use std::path::PathBuf;
@@ -18,6 +20,7 @@ pub struct AppState {
     pub transfer: Arc<RwLock<Option<Arc<TransferManager>>>>,
     pub sync: Arc<RwLock<SyncState>>,
     pub security: Arc<RwLock<SecurityService>>,
+    pub database: Arc<RwLock<Option<Database>>>,
 }
 
 #[tauri::command]
@@ -45,16 +48,57 @@ async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec
 #[tauri::command]
 async fn send_file(
     state: tauri::State<'_, AppState>,
+    device_id: String,
     ip: String,
     port: u16,
     path: String,
 ) -> Result<(), String> {
     println!("[Command] send_file called: {} to {}:{}", path, ip, port);
     
+    let file_path = PathBuf::from(&path);
+    let file_name = file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    
+    // Get file size for logging
+    let file_size = std::fs::metadata(&path)
+        .map(|m| m.len() as i64)
+        .unwrap_or(0);
+    
+    let transfer_id = uuid::Uuid::new_v4().to_string();
+    
+    // Record the transfer start in database
+    {
+        let db_lock = state.database.read().await;
+        if let Some(db) = &*db_lock {
+            let _ = db.record_transfer(
+                &transfer_id,
+                &device_id,
+                &file_name,
+                &path,
+                file_size,
+                "send",
+                "", // Hash will be calculated during transfer
+            ).await;
+        }
+    }
+    
     let transfer_lock = state.transfer.read().await;
     if let Some(tm) = &*transfer_lock {
         let (tx, _rx) = tokio::sync::mpsc::channel(100);
-        match tm.send_file(ip.clone(), port, PathBuf::from(&path), tx).await {
+        let result = tm.send_file(ip.clone(), port, file_path, tx).await;
+        
+        // Update transfer status
+        {
+            let db_lock = state.database.read().await;
+            if let Some(db) = &*db_lock {
+                let status = if result.is_ok() { "completed" } else { "failed" };
+                let _ = db.update_transfer_status(&transfer_id, status, file_size).await;
+            }
+        }
+        
+        match result {
             Ok(_) => {
                 println!("[Command] send_file completed successfully");
                 Ok(())
@@ -197,6 +241,47 @@ async fn get_sync_status(state: tauri::State<'_, AppState>) -> Result<Option<Str
         .map(|p| p.to_string_lossy().into_owned()))
 }
 
+#[tauri::command]
+async fn get_transfer_history(
+    state: tauri::State<'_, AppState>,
+    limit: Option<i32>,
+) -> Result<Vec<TransferRecord>, String> {
+    let db_lock = state.database.read().await;
+    if let Some(db) = &*db_lock {
+        db.get_transfer_history(limit.unwrap_or(100))
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(vec![])
+    }
+}
+
+#[tauri::command]
+async fn get_device_transfers(
+    state: tauri::State<'_, AppState>,
+    device_id: String,
+    limit: Option<i32>,
+) -> Result<Vec<TransferRecord>, String> {
+    let db_lock = state.database.read().await;
+    if let Some(db) = &*db_lock {
+        db.get_device_transfers(&device_id, limit.unwrap_or(50))
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(vec![])
+    }
+}
+
+#[tauri::command]
+async fn clear_transfer_history(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let db_lock = state.database.read().await;
+    if let Some(db) = &*db_lock {
+        db.clear_history().await.map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -219,7 +304,22 @@ pub fn run() {
             if !app_data_dir.exists() {
                 let _ = std::fs::create_dir_all(&app_data_dir);
             }
-            let security = SecurityService::new(app_data_dir);
+            let security = SecurityService::new(app_data_dir.clone());
+
+            // Initialize Database
+            let db_path = app_data_dir.join("proxishare.db");
+            let database = tauri::async_runtime::block_on(async {
+                match Database::new(&db_path).await {
+                    Ok(db) => {
+                        println!("Database initialized at {:?}", db_path);
+                        Some(db)
+                    }
+                    Err(e) => {
+                        println!("Failed to initialize database: {:?}", e);
+                        None
+                    }
+                }
+            });
 
             println!("Initializing services with block_on");
             let (discovery, transfer_manager) = tauri::async_runtime::block_on(async {
@@ -255,6 +355,7 @@ pub fn run() {
                 transfer: Arc::new(RwLock::new(Some(transfer_manager))),
                 sync: Arc::new(RwLock::new(SyncState::new())),
                 security: Arc::new(RwLock::new(security)),
+                database: Arc::new(RwLock::new(database)),
             });
 
             println!("Setup hook finished");
@@ -275,7 +376,10 @@ pub fn run() {
             request_pairing,
             accept_pairing,
             set_sync_folder,
-            get_sync_status
+            get_sync_status,
+            get_transfer_history,
+            get_device_transfers,
+            clear_transfer_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
