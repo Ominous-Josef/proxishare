@@ -47,25 +47,56 @@ impl DiscoveryService {
         let service_type = "_proxishare._tcp.local.";
         let instance_name = format!("{}_{}", self.device_name, &self.device_id[..8]);
 
-        // In a real app, we'd get the actual local IP.
-        // For now, we'll let mdns-sd handle it or use a placeholder if needed.
-        // mdns-sd usually picks up the interface IPs.
+        // Get all local IPs to register with mDNS
+        let local_ips = get_local_ips();
+        let ip_str = local_ips.first().map(|s| s.as_str()).unwrap_or("");
+        
+        println!("[mDNS] Broadcasting on interfaces: {:?}", local_ips);
 
         let mut properties = HashMap::new();
         properties.insert("id".to_string(), self.device_id.clone());
         properties.insert("name".to_string(), self.device_name.clone());
+        // Store all IPs in properties for cross-interface discovery
+        properties.insert("ips".to_string(), local_ips.join(","));
 
         let service_info = ServiceInfo::new(
             service_type,
             &instance_name,
             &format!("{}.local.", instance_name),
-            "",
+            ip_str,
             self.port,
             Some(properties),
         )?;
 
         self.mdns.register(service_info)?;
+        println!("[mDNS] Service registered: {} on port {}", instance_name, self.port);
         Ok(())
+    }
+    
+    /// Get network diagnostics for troubleshooting
+    pub fn get_diagnostics(&self) -> NetworkDiagnostics {
+        let interfaces = get_network_interfaces();
+        let local_ips = get_local_ips();
+        
+        // Determine subnet info
+        let subnet_info = if let Some(ip) = local_ips.first() {
+            let parts: Vec<&str> = ip.split('.').collect();
+            if parts.len() == 4 {
+                format!("{}.{}.{}.x", parts[0], parts[1], parts[2])
+            } else {
+                "Unknown".to_string()
+            }
+        } else {
+            "No network".to_string()
+        };
+        
+        NetworkDiagnostics {
+            interfaces,
+            local_ips,
+            mdns_port: 5353,
+            app_port: self.port,
+            subnet_info,
+        }
     }
 
     pub fn start_discovery(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -92,18 +123,30 @@ impl DiscoveryService {
                             .unwrap_or("Unknown Device")
                             .to_string();
                         
-                        // Collect all IP addresses for multi-interface support
-                        let all_ips: Vec<String> = info
+                        // Collect all IP addresses from mDNS response
+                        let mut all_ips: Vec<String> = info
                             .get_addresses()
                             .iter()
                             .map(|ip| ip.to_string())
                             .collect();
+                        
+                        // Also include IPs from properties (for cross-interface discovery)
+                        if let Some(ips_str) = info.get_property_val_str("ips") {
+                            for ip in ips_str.split(',') {
+                                let ip = ip.trim().to_string();
+                                if !ip.is_empty() && !all_ips.contains(&ip) {
+                                    all_ips.push(ip);
+                                }
+                            }
+                        }
                         
                         // Select the best IP (prefer IPv4, then local network ranges)
                         let ip = select_best_ip(info.get_addresses())
                             .unwrap_or_else(|| all_ips.first().cloned().unwrap_or_default());
                         
                         let port = info.get_port();
+                        
+                        println!("[mDNS] Discovered device: {} ({}) - IPs: {:?}", name, id, all_ips);
 
                         let mut devices = discovered_devices.write().await;
                         devices.insert(
@@ -230,4 +273,51 @@ fn select_best_ip(addresses: &std::collections::HashSet<IpAddr>) -> Option<Strin
         .or(ipv6_link_local)
         .or(ipv6_other)
         .map(|ip| ip.to_string())
+}
+
+/// Network interface information for diagnostics
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct NetworkInterface {
+    pub name: String,
+    pub ip: String,
+    pub is_loopback: bool,
+}
+
+/// Get all network interfaces with their IP addresses
+pub fn get_network_interfaces() -> Vec<NetworkInterface> {
+    let mut interfaces = Vec::new();
+    
+    if let Ok(addrs) = if_addrs::get_if_addrs() {
+        for iface in addrs {
+            // Skip IPv6 for now, focus on IPv4 for discovery
+            if let IpAddr::V4(ipv4) = iface.addr.ip() {
+                interfaces.push(NetworkInterface {
+                    name: iface.name.clone(),
+                    ip: ipv4.to_string(),
+                    is_loopback: ipv4.is_loopback(),
+                });
+            }
+        }
+    }
+    
+    interfaces
+}
+
+/// Get all local IPv4 addresses (non-loopback)
+pub fn get_local_ips() -> Vec<String> {
+    get_network_interfaces()
+        .into_iter()
+        .filter(|iface| !iface.is_loopback)
+        .map(|iface| iface.ip)
+        .collect()
+}
+
+/// Network diagnostics result
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct NetworkDiagnostics {
+    pub interfaces: Vec<NetworkInterface>,
+    pub local_ips: Vec<String>,
+    pub mdns_port: u16,
+    pub app_port: u16,
+    pub subnet_info: String,
 }

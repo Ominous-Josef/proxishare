@@ -3,7 +3,7 @@ pub mod discovery;
 pub mod sync;
 pub mod transfer;
 
-use crate::discovery::mdns::{Device, DiscoveryService};
+use crate::discovery::mdns::{Device, DiscoveryService, NetworkDiagnostics, get_network_interfaces, NetworkInterface};
 use crate::transfer::TransferManager;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -106,6 +106,30 @@ async fn find_reachable_device_ip(
     } else {
         Ok(None)
     }
+}
+
+#[tauri::command]
+async fn get_network_diagnostics(
+    state: tauri::State<'_, AppState>,
+) -> Result<NetworkDiagnostics, String> {
+    let discovery_lock = state.discovery.read().await;
+    if let Some(discovery) = &*discovery_lock {
+        Ok(discovery.get_diagnostics())
+    } else {
+        // Return basic diagnostics even without discovery service
+        Ok(NetworkDiagnostics {
+            interfaces: get_network_interfaces(),
+            local_ips: crate::discovery::mdns::get_local_ips(),
+            mdns_port: 5353,
+            app_port: 51731,
+            subnet_info: "Unknown".to_string(),
+        })
+    }
+}
+
+#[tauri::command]
+fn get_local_network_interfaces() -> Vec<NetworkInterface> {
+    get_network_interfaces()
 }
 
 #[tauri::command]
@@ -217,6 +241,8 @@ pub fn run() {
             is_device_trusted,
             test_device_connectivity,
             find_reachable_device_ip,
+            get_network_diagnostics,
+            get_local_network_interfaces,
             request_pairing,
             accept_pairing,
             set_sync_folder,
