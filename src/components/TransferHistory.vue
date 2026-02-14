@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
-import { useFileTransfer, TransferRecord } from "../composables/useFileTransfer";
+import { ClockIcon, FileIcon, RefreshCwIcon } from "lucide-vue-next";
+import { computed, onMounted, ref } from "vue";
+import { TransferRecord, useFileTransfer } from "../composables/useFileTransfer";
 
 const props = defineProps<{
   deviceId?: string | null;
@@ -89,17 +90,12 @@ const handleClearHistory = async () => {
   <div class="history-container">
     <div class="history-header">
       <h3>
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"></circle>
-          <polyline points="12 6 12 12 16 14"></polyline>
-        </svg>
+        <ClockIcon :size="18" />
         {{ deviceId ? `History with ${deviceName || 'Device'}` : 'Transfer History' }}
       </h3>
       <div class="header-actions">
         <button class="icon-btn" @click="loadData" :disabled="isLoading" title="Refresh">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :class="{ 'spinning': isLoading }">
-            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
-          </svg>
+          <RefreshCwIcon :size="16" :class="{'spinning': isLoading}" />
         </button>
         <button v-if="displayHistory.length > 0 && !deviceId" class="icon-btn danger" @click="showClearConfirm = true" title="Clear history">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -127,10 +123,7 @@ const handleClearHistory = async () => {
     </div>
 
     <div v-else-if="displayHistory.length === 0" class="empty-state">
-      <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-        <polyline points="14 2 14 8 20 8"></polyline>
-      </svg>
+      <FileIcon :size="28" />
       <p>No transfers yet</p>
     </div>
 
@@ -191,7 +184,7 @@ const handleClearHistory = async () => {
   gap: 10px;
   margin: 0;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
   color: #e0e0e0;
 }
 
@@ -243,6 +236,12 @@ const handleClearHistory = async () => {
   padding: 40px 20px;
   color: #666;
   gap: 12px;
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: 12px;
+  max-width: unset;
 }
 
 .spinner {

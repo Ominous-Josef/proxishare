@@ -128,7 +128,8 @@ const formatLastSeen = (timestamp: number) => {
   padding: 1.5rem;
   background: rgba(255, 255, 255, 0.05);
   border-radius: 12px;
-  height: 100%;
+  /* height: 100%; */
+  gap: 1.5rem;
   display: flex;
   flex-direction: column;
 }
@@ -142,12 +143,12 @@ const formatLastSeen = (timestamp: number) => {
 
 h2 {
   margin: 0;
-  font-size: 1.25rem;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 500;
 }
 
 .discovery-status {
-  font-size: 0.85rem;
+  font-size: 12px;
   color: #6366f1;
   display: flex;
   align-items: center;
@@ -236,9 +237,9 @@ h2 {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 3rem 1rem;
   text-align: center;
   color: #94a3b8;
+  font-size: 12px;
 }
 
 .spinner {
@@ -248,7 +249,6 @@ h2 {
   border-top-color: #6366f1;
   border-radius: 50%;
   animation: spin 1s linear infinite;
-  margin-bottom: 1rem;
 }
 
 @keyframes spin {

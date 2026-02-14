@@ -100,7 +100,7 @@ onMounted(async () => {
       </div>
 
       <div class="nav-section">
-        <SyncSettings style="margin: 0 1.5rem 1.5rem 1.5rem" />
+        <SyncSettings />
         <DeviceList
           :devices="devices"
           :selected-id="selectedId"
@@ -235,6 +235,10 @@ body {
 .nav-section {
   flex: 1;
   overflow-y: auto;
+  padding: 0 1.5rem;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 
 .main-content {

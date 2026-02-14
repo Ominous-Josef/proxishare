@@ -77,17 +77,18 @@ const { sharedFolder, isSyncing, selectFolder } = useSync();
 
 .header h3 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: 16px;
+  font-weight: 500;
 }
 
 .status-badge {
-  font-size: 0.75rem;
+  font-size: 12px;
   padding: 4px 8px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.1);
   color: #94a3b8;
   text-transform: uppercase;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0.05em;
 }
 
@@ -104,12 +105,13 @@ const { sharedFolder, isSyncing, selectFolder } = useSync();
 
 .info label {
   display: block;
-  font-weight: 600;
+  font-weight: 500;
   margin-bottom: 4px;
+  font-size: 14px;
 }
 
 .description {
-  font-size: 0.85rem;
+  font-size: 12px;
   color: #94a3b8;
   margin: 0;
 }
