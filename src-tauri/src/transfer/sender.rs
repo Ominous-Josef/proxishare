@@ -46,7 +46,10 @@ pub struct FileSender {
 
 impl FileSender {
     pub fn new(connection: Connection, app_handle: tauri::AppHandle) -> Self {
-        Self { connection, app_handle }
+        Self {
+            connection,
+            app_handle,
+        }
     }
 
     pub async fn calculate_hash(
@@ -122,15 +125,18 @@ impl FileSender {
 
             total_sent += n as u64;
             chunk_index += 1;
-            
+
             // Emit progress event
-            let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                transfer_id: transfer_id.clone(),
-                file_name: file_name.clone(),
-                bytes_sent: total_sent,
-                total_bytes: file_size,
-                direction: "send".to_string(),
-            });
+            let _ = self.app_handle.emit(
+                "transfer-progress",
+                TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    file_name: file_name.clone(),
+                    bytes_sent: total_sent,
+                    total_bytes: file_size,
+                    direction: "send".to_string(),
+                },
+            );
         }
 
         // 3. Send Completion
@@ -142,7 +148,7 @@ impl FileSender {
         )
         .await?;
 
-        // 4. Signal that we're done sending
+        // 4. Signal that we're done sending data (but keep stream open for reading ACK)
         send_stream.finish()?;
 
         // 5. Wait for acknowledgment from receiver before closing connection
@@ -152,9 +158,11 @@ impl FileSender {
         )
         .await
         {
-            Ok(Ok(MessageType::TransferCompleteAck { transfer_id: ack_id }))
-                if ack_id == transfer_id =>
-            {
+            Ok(Ok(MessageType::TransferCompleteAck {
+                transfer_id: ack_id,
+            })) if ack_id == transfer_id => {
+                // Give the receiver a moment to finish its side cleanly
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 Ok(())
             }
             Ok(Ok(_)) => Err("Unexpected message while waiting for completion ack".into()),

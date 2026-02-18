@@ -90,15 +90,18 @@ impl FileReceiver {
 
                         f.write_all(&data).await?;
                         bytes_received += data.len() as u64;
-                        
+
                         // Emit progress event
-                        let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                            transfer_id: current_transfer_id.clone(),
-                            file_name: current_file_name.clone(),
-                            bytes_sent: bytes_received,
-                            total_bytes: current_file_size,
-                            direction: "receive".to_string(),
-                        });
+                        let _ = self.app_handle.emit(
+                            "transfer-progress",
+                            TransferProgress {
+                                transfer_id: current_transfer_id.clone(),
+                                file_name: current_file_name.clone(),
+                                bytes_sent: bytes_received,
+                                total_bytes: current_file_size,
+                                direction: "receive".to_string(),
+                            },
+                        );
                     }
                 }
                 MessageType::TransferComplete { transfer_id } => {
@@ -115,15 +118,15 @@ impl FileReceiver {
                     .await?;
                     println!("[Transfer] Finishing send stream...");
                     send_stream.finish()?;
-                    
-                    // Wait for sender to close the connection gracefully
-                    // This ensures they received our ack before we drop the connection
-                    println!("[Transfer] Waiting for sender to close connection...");
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        recv_stream.read_to_end(1024),
-                    ).await;
-                    
+
+                    // Give QUIC time to flush the ACK bytes over the wire
+                    // before we return and the connection gets dropped
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                    // Explicitly close the connection gracefully
+                    self.connection
+                        .close(quinn::VarInt::from_u32(0), b"transfer complete");
+
                     println!("[Transfer] Transfer complete, breaking loop");
                     break;
                 }
