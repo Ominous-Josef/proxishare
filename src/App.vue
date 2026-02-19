@@ -11,6 +11,7 @@ import { useDevices, type Device } from "./composables/useDevices";
 
 const { devices, isDiscovering, refreshDevices } = useDevices();
 const selectedId = ref<string | null>(null);
+const currentView = ref<"devices" | "history">("devices");
 
 const pairingRequest = ref<{ device: Device; isOpen: boolean } | null>(null);
 
@@ -46,7 +47,10 @@ const handlePair = async (id: string) => {
 const handlePairConfirm = async (code: string) => {
   if (pairingRequest.value && code.length === 6) {
     try {
-      console.log("[Pairing] Accepting pairing for device:", pairingRequest.value.device.id);
+      console.log(
+        "[Pairing] Accepting pairing for device:",
+        pairingRequest.value.device.id
+      );
       await invoke("accept_pairing", {
         deviceId: pairingRequest.value.device.id,
       });
@@ -100,14 +104,35 @@ onMounted(async () => {
       </div>
 
       <div class="nav-section">
-        <SyncSettings />
-        <DeviceList
-          :devices="devices"
-          :selected-id="selectedId"
-          :is-discovering="isDiscovering"
-          @select="handleSelect"
-          @pair="handlePair"
-        />
+        <div class="nav-tabs">
+          <button
+            :class="['nav-tab', { active: currentView === 'devices' }]"
+            @click="currentView = 'devices'"
+          >
+            Devices
+          </button>
+          <button
+            :class="['nav-tab', { active: currentView === 'history' }]"
+            @click="currentView = 'history'"
+          >
+            History
+          </button>
+        </div>
+
+        <template v-if="currentView === 'devices'">
+          <SyncSettings />
+          <DeviceList
+            :devices="devices"
+            :selected-id="selectedId"
+            :is-discovering="isDiscovering"
+            @select="handleSelect"
+            @pair="handlePair"
+          />
+        </template>
+
+        <div v-else-if="currentView === 'history'" class="history-view">
+          <TransferHistory :device-id="null" :device-name="'All History'" />
+        </div>
       </div>
     </aside>
 
@@ -132,7 +157,7 @@ onMounted(async () => {
           v-if="selectedDevice"
           :device-id="selectedId"
           :device-name="selectedDevice.name"
-          style="margin-top: 20px;"
+          style="margin-top: 20px"
         />
         <div v-else class="hero">
           <div class="hero-icon">
@@ -152,8 +177,10 @@ onMounted(async () => {
           </div>
           <h2>Ready to Share</h2>
           <p>Files stay on your network. No cloud. No limits.</p>
-          
-          <TransferHistory style="margin-top: 40px; width: 100%; max-width: 500px;" />
+
+          <TransferHistory
+            style="margin-top: 40px; width: 100%; max-width: 500px"
+          />
         </div>
       </section>
     </main>
@@ -319,5 +346,38 @@ body {
 .hero p {
   max-width: 300px;
   line-height: 1.5;
+}
+
+.nav-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 1rem;
+  padding: 0 4px;
+}
+
+.nav-tab {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 8px 16px;
+  cursor: pointer;
+  font-weight: 500;
+  border-radius: 6px;
+  transition: all 0.2s;
+  flex: 1;
+}
+
+.nav-tab:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.nav-tab.active {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--accent-color);
+}
+
+.history-view {
+  padding: 0 4px;
 }
 </style>

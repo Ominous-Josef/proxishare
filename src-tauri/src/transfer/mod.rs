@@ -44,7 +44,10 @@ impl TransferManager {
     }
 
     pub async fn start_listening(&self, save_dir: PathBuf) {
-        println!("[Transfer] Server listening on port, save dir: {:?}", save_dir);
+        println!(
+            "[Transfer] Server listening on port, save dir: {:?}",
+            save_dir
+        );
         let app_handle = self.app_handle.clone();
         while let Some(conn) = self.endpoint.accept().await {
             println!("[Transfer] Incoming connection accepted");
@@ -68,43 +71,91 @@ impl TransferManager {
         }
     }
 
+    pub async fn send_message(
+        &self,
+        target_ip: String,
+        target_port: u16,
+        message: crate::transfer::protocol::MessageType,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        println!(
+            "[Transfer] Sending message to {}:{}",
+            target_ip, target_port
+        );
+
+        let addr = format!("{}:{}", target_ip, target_port).parse()?;
+        let connecting = self.endpoint.connect(addr, "proxishare.local")?;
+
+        let connection =
+            match tokio::time::timeout(std::time::Duration::from_secs(5), connecting).await {
+                Ok(Ok(conn)) => conn,
+                Ok(Err(e)) => return Err(format!("Connection failed: {}", e).into()),
+                Err(_) => return Err("Connection timed out".into()),
+            };
+
+        let (mut send_stream, _) = connection.open_bi().await?;
+
+        // Use the existing write_message from sender module logic (we might need to expose it or duplicate it safely)
+        // For now, let's just implement a quick write since FileSender::write_message is private
+        // and we don't want to refactor everything.
+        // Better yet, let's make FileSender::write_message public or move it to protocol.
+
+        // Quick implementation of write_message here for now
+        let data = bincode::serialize(&message)?;
+        let len = data.len() as u32;
+        send_stream.write_all(&len.to_be_bytes()).await?;
+        send_stream.write_all(&data).await?;
+
+        send_stream.finish()?;
+
+        // Give it a moment to send
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        connection.close(quinn::VarInt::from_u32(0), b"message sent");
+
+        Ok(())
+    }
+
     pub async fn send_file(
         &self,
         target_ip: String,
         target_port: u16,
         file_path: PathBuf,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        println!("[Transfer] Attempting to send file {:?} to {}:{}", file_path, target_ip, target_port);
-        
+        println!(
+            "[Transfer] Attempting to send file {:?} to {}:{}",
+            file_path, target_ip, target_port
+        );
+
         let addr = format!("{}:{}", target_ip, target_port).parse()?;
         println!("[Transfer] Connecting to {:?}...", addr);
-        
+
         let connecting = self.endpoint.connect(addr, "proxishare.local")?;
         println!("[Transfer] Connection initiated, waiting for handshake...");
-        
-        let connection = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            connecting
-        ).await {
-            Ok(Ok(conn)) => {
-                println!("[Transfer] Connection established!");
-                conn
-            }
-            Ok(Err(e)) => {
-                println!("[Transfer] Connection failed: {:?}", e);
-                return Err(format!("Connection failed: {}", e).into());
-            }
-            Err(_) => {
-                println!("[Transfer] Connection timed out after 10 seconds");
-                return Err("Connection timed out".into());
-            }
-        };
+
+        let connection =
+            match tokio::time::timeout(std::time::Duration::from_secs(10), connecting).await {
+                Ok(Ok(conn)) => {
+                    println!("[Transfer] Connection established!");
+                    conn
+                }
+                Ok(Err(e)) => {
+                    println!("[Transfer] Connection failed: {:?}", e);
+                    return Err(format!("Connection failed: {}", e).into());
+                }
+                Err(_) => {
+                    println!("[Transfer] Connection timed out after 10 seconds");
+                    return Err("Connection timed out".into());
+                }
+            };
 
         let sender = FileSender::new(connection, self.app_handle.clone());
         let transfer_id = uuid::Uuid::new_v4().to_string();
         println!("[Transfer] Starting file transfer with ID: {}", transfer_id);
 
-        match sender.send_file(transfer_id.clone(), file_path.clone()).await {
+        match sender
+            .send_file(transfer_id.clone(), file_path.clone())
+            .await
+        {
             Ok(_) => {
                 println!("[Transfer] File {:?} sent successfully!", file_path);
                 Ok(())

@@ -38,4 +38,5 @@ parking_lot = "0.12"
 fs2 = "0.4"
 rcgen = "0.12"
 if-addrs = "0.13"
+hostname = "0.4.2"
 

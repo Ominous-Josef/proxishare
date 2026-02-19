@@ -5,7 +5,6 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use uuid::Uuid;
 
 /// How long before a device is considered stale (5 minutes)
 /// mDNS doesn't continuously announce, so we need a longer timeout
@@ -34,8 +33,11 @@ pub struct DiscoveryService {
 }
 
 impl DiscoveryService {
-    pub fn new(device_name: String, port: u16) -> Result<Self, Box<dyn std::error::Error>> {
-        let device_id = Uuid::new_v4().to_string();
+    pub fn new(
+        device_id: String,
+        device_name: String,
+        port: u16,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let mdns = ServiceDaemon::new()?;
 
         Ok(Self {
@@ -54,7 +56,7 @@ impl DiscoveryService {
         // Get all local IPs to register with mDNS
         let local_ips = get_local_ips();
         let ip_str = local_ips.first().map(|s| s.as_str()).unwrap_or("");
-        
+
         println!("[mDNS] Broadcasting on interfaces: {:?}", local_ips);
 
         let mut properties = HashMap::new();
@@ -73,15 +75,18 @@ impl DiscoveryService {
         )?;
 
         self.mdns.register(service_info)?;
-        println!("[mDNS] Service registered: {} on port {}", instance_name, self.port);
+        println!(
+            "[mDNS] Service registered: {} on port {}",
+            instance_name, self.port
+        );
         Ok(())
     }
-    
+
     /// Get network diagnostics for troubleshooting
     pub fn get_diagnostics(&self) -> NetworkDiagnostics {
         let interfaces = get_network_interfaces();
         let local_ips = get_local_ips();
-        
+
         // Determine subnet info
         let subnet_info = if let Some(ip) = local_ips.first() {
             let parts: Vec<&str> = ip.split('.').collect();
@@ -93,7 +98,7 @@ impl DiscoveryService {
         } else {
             "No network".to_string()
         };
-        
+
         NetworkDiagnostics {
             interfaces,
             local_ips,
@@ -106,8 +111,11 @@ impl DiscoveryService {
     pub fn start_discovery(&self) -> Result<(), Box<dyn std::error::Error>> {
         let service_type = "_proxishare._tcp.local.";
         let receiver = self.mdns.browse(service_type)?;
-        
-        println!("[mDNS] Discovery started, listening for {} services", service_type);
+
+        println!(
+            "[mDNS] Discovery started, listening for {} services",
+            service_type
+        );
 
         let discovered_devices = Arc::clone(&self.discovered_devices);
         let own_device_id = self.device_id.clone();
@@ -131,14 +139,14 @@ impl DiscoveryService {
                                     .get_property_val_str("name")
                                     .unwrap_or("Unknown Device")
                                     .to_string();
-                        
+
                                 // Collect all IP addresses from mDNS response
                                 let mut all_ips: Vec<String> = info
                                     .get_addresses()
                                     .iter()
                                     .map(|ip| ip.to_string())
                                     .collect();
-                        
+
                                 // Also include IPs from properties (for cross-interface discovery)
                                 if let Some(ips_str) = info.get_property_val_str("ips") {
                                     for ip in ips_str.split(',') {
@@ -148,14 +156,19 @@ impl DiscoveryService {
                                         }
                                     }
                                 }
-                        
+
                                 // Select the best IP (prefer IPv4, then local network ranges)
-                                let ip = select_best_ip(info.get_addresses())
-                                    .unwrap_or_else(|| all_ips.first().cloned().unwrap_or_default());
-                        
+                                let ip =
+                                    select_best_ip(info.get_addresses()).unwrap_or_else(|| {
+                                        all_ips.first().cloned().unwrap_or_default()
+                                    });
+
                                 let port = info.get_port();
-                        
-                                println!("[mDNS] Discovered device: {} ({}) - IPs: {:?}", name, id, all_ips);
+
+                                println!(
+                                    "[mDNS] Discovered device: {} ({}) - IPs: {:?}",
+                                    name, id, all_ips
+                                );
 
                                 let mut devices = discovered_devices.write().await;
                                 devices.insert(
@@ -174,7 +187,8 @@ impl DiscoveryService {
                                 // Remove device when service is explicitly removed
                                 let mut devices = discovered_devices.write().await;
                                 // Try to find and remove by matching the instance name prefix
-                                let id_to_remove: Option<String> = devices.iter()
+                                let id_to_remove: Option<String> = devices
+                                    .iter()
                                     .find(|(_, d)| name.contains(&d.id[..8]))
                                     .map(|(id, _)| id.clone());
                                 if let Some(id) = id_to_remove {
@@ -201,7 +215,7 @@ impl DiscoveryService {
             let mut requery_counter = 0u64;
             loop {
                 tokio::time::sleep(Duration::from_secs(10)).await;
-                
+
                 // Clean up stale devices
                 let now = Utc::now().timestamp();
                 let mut devices = cleanup_devices.write().await;
@@ -209,12 +223,16 @@ impl DiscoveryService {
                 devices.retain(|id, device| {
                     let keep = now - device.last_seen < DEVICE_TIMEOUT_SECS;
                     if !keep {
-                        println!("[mDNS] Removing stale device: {} (last seen {}s ago)", id, now - device.last_seen);
+                        println!(
+                            "[mDNS] Removing stale device: {} (last seen {}s ago)",
+                            id,
+                            now - device.last_seen
+                        );
                     }
                     keep
                 });
                 drop(devices);
-                
+
                 // Re-query every REQUERY_INTERVAL_SECS to refresh device list
                 requery_counter += 10;
                 if requery_counter >= REQUERY_INTERVAL_SECS {
@@ -228,7 +246,7 @@ impl DiscoveryService {
 
         Ok(())
     }
-    
+
     /// Test connectivity to a device by attempting a TCP connection
     pub async fn test_connectivity(&self, ip: &str, port: u16) -> bool {
         use std::net::SocketAddr;
@@ -236,30 +254,32 @@ impl DiscoveryService {
             Ok(a) => a,
             Err(_) => return false,
         };
-        
+
         match tokio::time::timeout(
             Duration::from_millis(500),
             tokio::net::TcpStream::connect(addr),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(_)) => true,
             _ => false,
         }
     }
-    
+
     /// Find a reachable IP for a device from its list of addresses
     pub async fn find_reachable_ip(&self, device: &Device) -> Option<String> {
         // First try the primary IP
         if self.test_connectivity(&device.ip, device.port).await {
             return Some(device.ip.clone());
         }
-        
+
         // Try other IPs
         for ip in &device.all_ips {
             if ip != &device.ip && self.test_connectivity(ip, device.port).await {
                 return Some(ip.clone());
             }
         }
-        
+
         None
     }
 
@@ -321,7 +341,7 @@ pub struct NetworkInterface {
 /// Get all network interfaces with their IP addresses
 pub fn get_network_interfaces() -> Vec<NetworkInterface> {
     let mut interfaces = Vec::new();
-    
+
     if let Ok(addrs) = if_addrs::get_if_addrs() {
         for iface in addrs {
             // Skip IPv6 for now, focus on IPv4 for discovery
@@ -334,7 +354,7 @@ pub fn get_network_interfaces() -> Vec<NetworkInterface> {
             }
         }
     }
-    
+
     interfaces
 }
 

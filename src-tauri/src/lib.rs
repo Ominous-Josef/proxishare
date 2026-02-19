@@ -5,7 +5,9 @@ pub mod sync;
 pub mod transfer;
 
 use crate::db::{Database, TransferRecord};
-use crate::discovery::mdns::{Device, DiscoveryService, NetworkDiagnostics, get_network_interfaces, NetworkInterface};
+use crate::discovery::mdns::{
+    get_network_interfaces, Device, DiscoveryService, NetworkDiagnostics, NetworkInterface,
+};
 use crate::transfer::TransferManager;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -54,36 +56,38 @@ async fn send_file(
     path: String,
 ) -> Result<(), String> {
     println!("[Command] send_file called: {} to {}:{}", path, ip, port);
-    
+
     let file_path = PathBuf::from(&path);
     let file_name = file_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    
+
     // Get file size for logging
     let file_size = std::fs::metadata(&path)
         .map(|m| m.len() as i64)
         .unwrap_or(0);
-    
+
     let transfer_id = uuid::Uuid::new_v4().to_string();
-    
+
     // Record the transfer start in database
     {
         let db_lock = state.database.read().await;
         if let Some(db) = &*db_lock {
-            let _ = db.record_transfer(
-                &transfer_id,
-                &device_id,
-                &file_name,
-                &path,
-                file_size,
-                "send",
-                "", // Hash will be calculated during transfer
-            ).await;
+            let _ = db
+                .record_transfer(
+                    &transfer_id,
+                    &device_id,
+                    &file_name,
+                    &path,
+                    file_size,
+                    "send",
+                    "", // Hash will be calculated during transfer
+                )
+                .await;
         }
     }
-    
+
     let transfer_lock = state.transfer.read().await;
     if let Some(tm) = &*transfer_lock {
         // Convert result to Send-compatible type immediately
@@ -91,18 +95,20 @@ async fn send_file(
             .send_file(ip.clone(), port, file_path)
             .await
             .map_err(|e| e.to_string());
-        
+
         let is_success = send_result.is_ok();
-        
+
         // Update transfer status
         {
             let db_lock = state.database.read().await;
             if let Some(db) = &*db_lock {
                 let status = if is_success { "completed" } else { "failed" };
-                let _ = db.update_transfer_status(&transfer_id, status, file_size).await;
+                let _ = db
+                    .update_transfer_status(&transfer_id, status, file_size)
+                    .await;
             }
         }
-        
+
         match send_result {
             Ok(_) => {
                 println!("[Command] send_file completed successfully");
@@ -199,21 +205,50 @@ async fn request_pairing(
     ip: String,
     port: u16,
 ) -> Result<(), String> {
-    println!("[Pairing] Sending pairing request to {} ({}:{})", device_id, ip, port);
-    
+    println!(
+        "[Pairing] Sending pairing request to {} ({}:{})",
+        device_id, ip, port
+    );
+
     // Get our device info for the pairing request
     let discovery_lock = state.discovery.read().await;
-    let _my_id = discovery_lock.as_ref()
+    let my_id = discovery_lock
+        .as_ref()
         .map(|d| d.get_my_id())
         .unwrap_or_else(|| "unknown".to_string());
     drop(discovery_lock);
-    
+
+    // Get hostname as device name
+    let my_name = hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_else(|| "ProxiNode".to_string());
+
+    // Send pairing request message
+    let transfer_lock = state.transfer.read().await;
+    if let Some(tm) = &*transfer_lock {
+        let _ = tm
+            .send_message(
+                ip.clone(),
+                port,
+                crate::transfer::protocol::MessageType::PairRequest {
+                    device_id: my_id,
+                    device_name: my_name,
+                    pairing_code: "0000".to_string(), // Fixed for now, could be random
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
     // For now, just trust the device directly (simplified pairing)
     // In a full implementation, we'd send a pairing request over the network
     // and wait for the other device to accept
     let mut security = state.security.write().await;
-    security.add_trusted(device_id.clone()).map_err(|e| e.to_string())?;
-    
+    security
+        .add_trusted(device_id.clone())
+        .map_err(|e| e.to_string())?;
+
     println!("[Pairing] Device {} added to trusted devices", device_id);
     Ok(())
 }
@@ -225,7 +260,9 @@ async fn accept_pairing(
 ) -> Result<(), String> {
     println!("[Pairing] Accepting pairing for device: {}", device_id);
     let mut security = state.security.write().await;
-    security.add_trusted(device_id.clone()).map_err(|e| e.to_string())?;
+    security
+        .add_trusted(device_id.clone())
+        .map_err(|e| e.to_string())?;
     println!("[Pairing] Device {} is now trusted", device_id);
     Ok(())
 }
@@ -326,6 +363,22 @@ pub fn run() {
                 }
             });
 
+            // Initialize Device ID and Name
+            let device_id_path = app_data_dir.join("device_id.txt");
+            let device_id = if device_id_path.exists() {
+                std::fs::read_to_string(&device_id_path)
+                    .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
+            } else {
+                let id = uuid::Uuid::new_v4().to_string();
+                let _ = std::fs::write(&device_id_path, &id);
+                id
+            };
+
+            let device_name = hostname::get()
+                .ok()
+                .and_then(|h| h.into_string().ok())
+                .unwrap_or_else(|| "ProxiNode".to_string());
+
             println!("Initializing services with block_on");
             let (discovery, transfer_manager) = tauri::async_runtime::block_on(async {
                 println!("Inside block_on: Initializing TransferManager");
@@ -336,7 +389,7 @@ pub fn run() {
 
                 println!("Inside block_on: Initializing DiscoveryService");
                 // Initialize Discovery Service
-                let ds = DiscoveryService::new("ProxiNode".to_string(), port)?;
+                let ds = DiscoveryService::new(device_id, device_name, port)?;
                 println!("Inside block_on: DiscoveryService initialized");
 
                 Ok::<(DiscoveryService, Arc<TransferManager>), Box<dyn std::error::Error>>((
