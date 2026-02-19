@@ -13,18 +13,18 @@
 
 ## 🛠️ Tech Stack
 
-- **Frontend:** [Vue.js 3](https://vuejs.org/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vitejs.dev/)
-- **Backend:** [Rust](https://www.rust-lang.org/)
-- **Networking:** [Quinn](https://github.com/quinn-rs/quinn) (QUIC Protocol), [mdns-sd](https://github.com/keepsimple/mdns-sd) (Discovery)
-- **Database:** [SQLite](https://www.sqlite.org/) (via SQLx)
-- **File Watching:** [notify](https://github.com/notify-rs/notify)
+- **Frontend:** Vue.js 3, TypeScript, Vite
+- **Backend:** Rust
+- **Networking:** Quinn (QUIC Protocol), mdns-sd (Discovery)
+- **Database:** SQLite (via SQLx)
+- **File Watching:** notify
 
 ## 📦 Getting Started
 
 ### Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install)
-- [Node.js](https://nodejs.org/) & `npm`
+- [Node.js](https://nodejs.org/)
 - [Tauri CLI](https://tauri.app/v1/guides/getting-started/prerequisites)
 
 ### Run in Development
