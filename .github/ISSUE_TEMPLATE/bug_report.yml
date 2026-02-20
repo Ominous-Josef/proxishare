@@ -1,0 +1,56 @@
+---
+name: Bug Report
+description: Report a bug to help us improve ProxiShare
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the information below to help us reproduce it.
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Description & Steps to Reproduce
+      description: What happened? How can we make it happen again?
+      placeholder: |
+        1. Open the app on Windows
+        2. Click on 'Send File'
+        3. App crashes when selecting a large file
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Windows
+        - macOS
+        - Ubuntu / Debian
+        - Fedora / RedHat
+        - Other Linux Distro
+        - Android
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ProxiShare Version
+      description: e.g. v0.1.0 (Check in 'Support' tab)
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Paste any error messages or console output here.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Final Checks
+      options:
+        - label: I am using the latest version of ProxiShare.
+          required: true
+        - label: I have checked existing issues for duplicates.
+          required: true

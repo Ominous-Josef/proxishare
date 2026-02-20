@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { computed, onMounted, ref } from "vue";
 import DeviceList from "./components/DeviceList.vue";
 import FileTransfer from "./components/FileTransfer.vue";
+import NetworkDiagnostics from "./components/NetworkDiagnostics.vue";
 import PairingDialog from "./components/PairingDialog.vue";
 import SyncSettings from "./components/SyncSettings.vue";
 import TransferHistory from "./components/TransferHistory.vue";
@@ -11,7 +13,7 @@ import { useDevices, type Device } from "./composables/useDevices";
 
 const { devices, isDiscovering, refreshDevices } = useDevices();
 const selectedId = ref<string | null>(null);
-const currentView = ref<"devices" | "history">("devices");
+const currentView = ref<"devices" | "history" | "support">("devices");
 
 const pairingRequest = ref<{ device: Device; isOpen: boolean } | null>(null);
 
@@ -21,6 +23,10 @@ const selectedDevice = computed(
 
 const handleSelect = (id: string) => {
   selectedId.value = id;
+};
+
+const handleReportIssue = async () => {
+  await openUrl("https://github.com/Ominous-Josef/proxishare/issues");
 };
 
 const handlePair = async (id: string) => {
@@ -102,6 +108,12 @@ onMounted(async () => {
           >
             History
           </button>
+          <button
+            :class="['nav-tab', { active: currentView === 'support' }]"
+            @click="currentView = 'support'"
+          >
+            Support
+          </button>
         </div>
 
         <template v-if="currentView === 'devices'">
@@ -117,6 +129,15 @@ onMounted(async () => {
 
         <div v-else-if="currentView === 'history'" class="history-view">
           <TransferHistory :device-id="null" :device-name="'All History'" />
+        </div>
+
+        <div v-else-if="currentView === 'support'" class="support-view">
+          <div class="support-actions">
+            <button class="primary-btn" @click="handleReportIssue">
+              Report an Issue
+            </button>
+          </div>
+          <NetworkDiagnostics />
         </div>
       </div>
     </aside>
@@ -350,7 +371,28 @@ body {
   color: var(--accent-color);
 }
 
-.history-view {
+.history-view,
+.support-view {
   padding: 0 4px;
+}
+
+.support-actions {
+  margin-bottom: 1.5rem;
+}
+
+.primary-btn {
+  width: 100%;
+  background: var(--accent-color);
+  color: white;
+  border: none;
+  padding: 12px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.primary-btn:hover {
+  opacity: 0.9;
 }
 </style>

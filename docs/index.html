@@ -392,6 +392,62 @@
 			</div>
 		</main>
 
+		<!-- Troubleshooting Section -->
+		<section id="troubleshooting" class="container mx-auto px-6 py-20 border-t border-slate-800">
+			<div class="max-w-4xl mx-auto">
+				<div class="text-center mb-16">
+					<h2 class="text-3xl font-bold mb-4">Having Trouble?</h2>
+					<p class="text-slate-400">Most issues are related to local network configuration. Check these common
+						fixes.</p>
+				</div>
+
+				<div class="grid md:grid-cols-2 gap-8">
+					<div class="bg-slate-800/30 p-8 rounded-2xl border border-slate-700/50">
+						<h3 class="text-xl font-bold mb-4 flex items-center gap-2">
+							<svg class="w-5 h-5 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+									d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+							</svg>
+							Connectivity Checklist
+						</h3>
+						<ul class="space-y-4 text-slate-400">
+							<li class="flex gap-3">
+								<span class="text-brand-500 font-bold">•</span>
+								<span><strong>Same Subnet:</strong> Ensure both devices are on the same Wi-Fi or local
+									network.</span>
+							</li>
+							<li class="flex gap-3">
+								<span class="text-brand-500 font-bold">•</span>
+								<span><strong>Firewall:</strong> Allow ProxiShare or open UDP port 5353 and the app's
+									TCP
+									port.</span>
+							</li>
+							<li class="flex gap-3">
+								<span class="text-brand-500 font-bold">•</span>
+								<span><strong>VPN:</strong> Disable VPNs as they often block local network
+									discovery.</span>
+							</li>
+						</ul>
+					</div>
+
+					<div
+						class="bg-slate-800/30 p-8 rounded-2xl border border-slate-700/50 flex flex-col justify-center text-center">
+						<h3 class="text-xl font-bold mb-4">Still not working?</h3>
+						<p class="text-slate-400 mb-8">If you've checked the list and still can't connect, please report
+							an issue with your logs.</p>
+						<a href="https://github.com/Ominous-Josef/proxishare/issues"
+							class="inline-flex items-center justify-center gap-2 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-3 px-6 rounded-xl transition">
+							Report on GitHub
+							<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+									d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+							</svg>
+						</a>
+					</div>
+				</div>
+			</div>
+		</section>
+
 		<!-- Features -->
 		<section class="container mx-auto px-6 py-16 border-t border-slate-800">
 			<div class="grid md:grid-cols-3 gap-12 text-center max-w-5xl mx-auto">
