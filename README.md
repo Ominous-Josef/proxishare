@@ -47,6 +47,18 @@ npm run tauri build
 
 All transfers are encrypted using QUIC's built-in TLS. Devices must be explicitly "paired" before they can exchange sensitive information, ensuring your files stay safe and only go where you want them to.
 
+## Download
+
+Get the latest version here:
+
+https://github.com/Ominous-Josef/proxishare/releases/latest
+
+## Platforms
+
+- Windows (.msi / .exe)
+- macOS (.dmg)
+- Linux (.AppImage / .deb / .rpm)
+
 ---
 
 Built &amp; Developed by [Ohwonohwo Joseph](https://github.com/Ominous-Josef).
