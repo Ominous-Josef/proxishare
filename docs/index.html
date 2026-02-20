@@ -407,10 +407,16 @@
 		</section>
 
 		<footer class="text-center py-12 text-slate-500 text-sm">
-			<p>&copy; 2026 ProxiShare. Open Source on <a href="https://github.com/Ominous-Josef/proxishare"
-					class="underline hover:text-white">GitHub</a>.</p>
+			<p>&copy; <span id="year">2026</span> ProxiShare. Open Source on <a
+					href="https://github.com/Ominous-Josef/proxishare" class="underline hover:text-white">GitHub</a>.
+			</p>
 		</footer>
 
 	</body>
+
+	<script>
+		const year = document.getElementById('year');
+		year.textContent = new Date().getFullYear();
+	</script>
 
 </html>
