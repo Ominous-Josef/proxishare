@@ -80,22 +80,7 @@ onMounted(async () => {
     <aside class="sidebar">
       <div class="logo-area">
         <div class="logo-icon">
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="32"
-            height="32"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-            <circle cx="9" cy="7" r="4"></circle>
-            <polyline points="23 21 23 14 16 14"></polyline>
-            <path d="M17 14l6 7"></path>
-          </svg>
+          <img src="/app-icon.png" alt="Logo" width="32" height="32" />
         </div>
         <div class="logo-text">
           <h1>ProxiShare</h1>
@@ -161,19 +146,7 @@ onMounted(async () => {
         />
         <div v-else class="hero">
           <div class="hero-icon">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="64"
-              height="64"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-            </svg>
+            <img src="/app-icon.png" alt="ProxiShare" width="64" height="64" />
           </div>
           <h2>Ready to Share</h2>
           <p>Files stay on your network. No cloud. No limits.</p>
@@ -241,10 +214,10 @@ body {
 }
 
 .logo-icon {
-  background: linear-gradient(135deg, #6366f1, #a855f7);
+  /* background: linear-gradient(135deg, #6366f1, #a855f7); */
   padding: 8px;
   border-radius: 10px;
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+  /* box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3); */
 }
 
 .logo-text h1 {
