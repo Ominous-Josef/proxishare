@@ -93,7 +93,7 @@ async fn send_file(
     {
         let db_lock = state.database.read().await;
         if let Some(db) = &*db_lock {
-            let _ = db
+            if let Err(e) = db
                 .record_transfer(
                     &transfer_id,
                     &device_id,
@@ -103,7 +103,10 @@ async fn send_file(
                     "send",
                     "", // Hash will be calculated during transfer
                 )
-                .await;
+                .await
+            {
+                println!("[Database] Failed to record transfer: {:?}", e);
+            }
         }
     }
 
@@ -130,9 +133,12 @@ async fn send_file(
                     Err(e) if e.contains("cancelled") => "cancelled",
                     Err(_) => "failed",
                 };
-                let _ = db
+                if let Err(e) = db
                     .update_transfer_status(&transfer_id, status, file_size)
-                    .await;
+                    .await
+                {
+                    println!("[Database] Failed to update transfer status: {:?}", e);
+                }
             }
         }
 

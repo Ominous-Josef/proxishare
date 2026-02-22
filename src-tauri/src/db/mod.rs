@@ -42,6 +42,7 @@ impl Database {
 
         // Run migrations
         sqlx::query(schema::SCHEMA).execute(&pool).await?;
+        println!("[Database] Initialized and migrations run");
 
         Ok(Self { pool })
     }
@@ -57,6 +58,10 @@ impl Database {
         file_hash: &str,
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().timestamp();
+        println!(
+            "[Database] Recording transfer: id={}, direction={}, file={}",
+            id, direction, file_name
+        );
 
         sqlx::query(
             r#"
@@ -86,6 +91,10 @@ impl Database {
         bytes_transferred: i64,
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().timestamp();
+        println!(
+            "[Database] Updating transfer status: id={}, status={}",
+            id, status
+        );
 
         sqlx::query(
             r#"

@@ -73,7 +73,7 @@ impl FileReceiver {
                     {
                         let db_lock = self.database.read().await;
                         if let Some(db) = &*db_lock {
-                            let _ = db
+                            if let Err(e) = db
                                 .record_transfer(
                                     &current_transfer_id,
                                     &sender_id,
@@ -83,7 +83,10 @@ impl FileReceiver {
                                     "receive",
                                     &metadata.hash,
                                 )
-                                .await;
+                                .await
+                            {
+                                println!("[Database] Failed to record transfer: {:?}", e);
+                            }
                         }
                     }
 
@@ -137,13 +140,16 @@ impl FileReceiver {
                     {
                         let db_lock = self.database.read().await;
                         if let Some(db) = &*db_lock {
-                            let _ = db
+                            if let Err(e) = db
                                 .update_transfer_status(
                                     &transfer_id,
                                     "completed",
                                     current_file_size as i64,
                                 )
-                                .await;
+                                .await
+                            {
+                                println!("[Database] Failed to update transfer status: {:?}", e);
+                            }
                         }
                     }
 
