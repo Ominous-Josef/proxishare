@@ -136,26 +136,70 @@ impl FileReceiver {
                                         bytes_sent: bytes_received,
                                         total_bytes: current_file_size,
                                         direction: "receive".to_string(),
+                                        status: "in_progress".to_string(),
                                     },
                                 );
                             }
                         }
                         MessageType::TransferPause { transfer_id: _ } => {
                             println!("[Receiver] Transfer paused by sender");
-                            let mut transfers = self.transfers.write().await;
-                            transfers.insert(current_transfer_id.clone(), crate::TransferStatus::Paused);
+                            {
+                                let mut transfers = self.transfers.write().await;
+                                transfers.insert(current_transfer_id.clone(), crate::TransferStatus::Paused);
+                            }
                             last_status = crate::TransferStatus::Paused;
+                            // Emit progress event
+                            let _ = self.app_handle.emit(
+                                "transfer-progress",
+                                TransferProgress {
+                                    transfer_id: current_transfer_id.clone(),
+                                    file_name: current_file_name.clone(),
+                                    bytes_sent: bytes_received,
+                                    total_bytes: current_file_size,
+                                    direction: "receive".to_string(),
+                                    status: "paused".to_string(),
+                                },
+                            );
                         }
                         MessageType::TransferResume { transfer_id: _ } => {
                             println!("[Receiver] Transfer resumed by sender");
-                            let mut transfers = self.transfers.write().await;
-                            transfers.insert(current_transfer_id.clone(), crate::TransferStatus::InProgress);
+                            {
+                                let mut transfers = self.transfers.write().await;
+                                transfers.insert(current_transfer_id.clone(), crate::TransferStatus::InProgress);
+                            }
                             last_status = crate::TransferStatus::InProgress;
+                            // Emit progress event
+                            let _ = self.app_handle.emit(
+                                "transfer-progress",
+                                TransferProgress {
+                                    transfer_id: current_transfer_id.clone(),
+                                    file_name: current_file_name.clone(),
+                                    bytes_sent: bytes_received,
+                                    total_bytes: current_file_size,
+                                    direction: "receive".to_string(),
+                                    status: "in_progress".to_string(),
+                                },
+                            );
                         }
                         MessageType::TransferCancel { transfer_id: _ } => {
                             println!("[Receiver] Transfer cancelled by sender");
-                            let mut transfers = self.transfers.write().await;
-                            transfers.insert(current_transfer_id.clone(), crate::TransferStatus::Cancelled);
+                            {
+                                let mut transfers = self.transfers.write().await;
+                                transfers.insert(current_transfer_id.clone(), crate::TransferStatus::Cancelled);
+                            }
+                            // Emit progress event
+                            let _ = self.app_handle.emit(
+                                "transfer-progress",
+                                TransferProgress {
+                                    transfer_id: current_transfer_id.clone(),
+                                    file_name: current_file_name.clone(),
+                                    bytes_sent: bytes_received,
+                                    total_bytes: current_file_size,
+                                    direction: "receive".to_string(),
+                                    status: "cancelled".to_string(),
+                                },
+                            );
+                            let _ = self.app_handle.emit("history-updated", ());
                             return Err("Transfer cancelled by sender".into());
                         }
                         MessageType::TransferComplete { transfer_id } => {
@@ -166,19 +210,43 @@ impl FileReceiver {
                             // Update status in database
                             {
                                 let db_lock = self.database.read().await;
-                                if let Some(db) = &*db_lock {
-                                    if let Err(e) = db
-                                        .update_transfer_status(
-                                            &transfer_id,
-                                            "completed",
-                                            current_file_size as i64,
-                                        )
-                                        .await
-                                    {
-                                        println!("[Database] Failed to update transfer status: {:?}", e);
+                                    if let Some(db) = &*db_lock {
+                                        if let Err(e) = db
+                                            .update_transfer_status(
+                                                &transfer_id,
+                                                "completed",
+                                                current_file_size as i64,
+                                            )
+                                            .await
+                                        {
+                                            println!("[Database] Failed to update transfer status: {:?}", e);
+                                        }
+
+                                        // Automatic History Sync after completion
+                                        println!("[Transfer] Preparing automatic history sync...");
+                                        if let Ok(records) = db.get_transfer_history(50).await {
+                                            println!("[Transfer] Sending {} history records to sender...", records.len());
+                                            let _ = Self::write_message(
+                                                &mut send_stream,
+                                                &MessageType::HistorySync { records },
+                                            ).await;
+                                        }
                                     }
                                 }
-                            }
+
+                                // Notify frontend that history changed
+                                let _ = self.app_handle.emit("history-updated", ());
+                                let _ = self.app_handle.emit(
+                                    "transfer-progress",
+                                    TransferProgress {
+                                        transfer_id: transfer_id.clone(),
+                                        file_name: current_file_name.clone(),
+                                        bytes_sent: current_file_size,
+                                        total_bytes: current_file_size,
+                                        direction: "receive".to_string(),
+                                        status: "completed".to_string(),
+                                    },
+                                );
 
                             println!("[Transfer] Sending TransferCompleteAck...");
                             // Send acknowledgment on the same stream
@@ -230,6 +298,8 @@ impl FileReceiver {
                                         .await;
                                 }
                             }
+                            // Notify frontend that history changed
+                            let _ = self.app_handle.emit("history-updated", ());
                         }
                         MessageType::PairRequest {
                             device_id,
@@ -290,6 +360,22 @@ impl FileReceiver {
                                 }
                                 _ => {}
                             }
+                            // Emit progress update when local status changes
+                            let _ = self.app_handle.emit(
+                                "transfer-progress",
+                                TransferProgress {
+                                    transfer_id: current_transfer_id.clone(),
+                                    file_name: current_file_name.clone(),
+                                    bytes_sent: bytes_received,
+                                    total_bytes: current_file_size,
+                                    direction: "receive".to_string(),
+                                    status: match status {
+                                        crate::TransferStatus::Paused => "paused",
+                                        crate::TransferStatus::Cancelled => "cancelled",
+                                        _ => "in_progress",
+                                    }.to_string(),
+                                },
+                            );
                             last_status = status;
                         }
                     }

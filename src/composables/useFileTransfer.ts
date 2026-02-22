@@ -27,6 +27,7 @@ export interface TransferProgress {
   bytes_sent: number;
   total_bytes: number;
   direction: string;
+  status: string;
 }
 
 export interface TransferRecord {
@@ -70,7 +71,7 @@ export function useFileTransfer() {
           totalBytes: progress.total_bytes,
           bytesTransferred: progress.bytes_sent,
           progress: percent,
-          status: percent >= 100 ? "completed" : "in_progress",
+          status: progress.status as any,
           direction: progress.direction as "send" | "receive",
         };
 
@@ -90,6 +91,15 @@ export function useFileTransfer() {
 
   // Auto-setup listener
   setupProgressListener();
+
+  // Listen for history updates
+  const setupHistoryListener = async () => {
+    await listen("history-updated", async () => {
+      console.log("[FileTransfer] History update event received, reloading...");
+      await loadHistory();
+    });
+  };
+  setupHistoryListener();
 
   // Cleanup on unmount
   onUnmounted(() => {

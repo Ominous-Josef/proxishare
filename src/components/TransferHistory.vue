@@ -1,14 +1,19 @@
 <script setup lang="ts">
+import { listen } from "@tauri-apps/api/event";
 import { ClockIcon, FileIcon, RefreshCwIcon } from "lucide-vue-next";
-import { computed, onMounted, ref } from "vue";
-import { TransferRecord, useFileTransfer } from "../composables/useFileTransfer";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import {
+  TransferRecord,
+  useFileTransfer,
+} from "../composables/useFileTransfer";
 
 const props = defineProps<{
   deviceId?: string | null;
   deviceName?: string | null;
 }>();
 
-const { history, loadHistory, loadDeviceHistory, clearHistory } = useFileTransfer();
+const { history, loadHistory, loadDeviceHistory, clearHistory } =
+  useFileTransfer();
 const deviceHistory = ref<TransferRecord[]>([]);
 const isLoading = ref(false);
 const showClearConfirm = ref(false);
@@ -33,24 +38,42 @@ const loadData = async () => {
   }
 };
 
-onMounted(() => {
-  loadData();
+onMounted(async () => {
+  await loadData();
+
+  // Listen for history updates to refresh list
+  const unlisten = await listen("history-updated", async () => {
+    console.log("[TransferHistory] Refreshing history...");
+    await loadData();
+  });
+
+  onUnmounted(() => {
+    unlisten();
+  });
 });
 
 const formatDate = (timestamp: number) => {
   const date = new Date(timestamp * 1000);
   const now = new Date();
   const diff = now.getTime() - date.getTime();
-  
+
   // Less than 24 hours ago
   if (diff < 86400000) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
   // Less than 7 days ago
   if (diff < 604800000) {
-    return date.toLocaleDateString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    return date.toLocaleDateString([], {
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   }
-  return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+  return date.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 };
 
 const formatBytes = (bytes: number) => {
@@ -63,19 +86,35 @@ const formatBytes = (bytes: number) => {
 
 const getStatusClass = (status: string) => {
   switch (status) {
-    case 'completed': return 'status-completed';
-    case 'failed': return 'status-failed';
-    case 'in_progress': return 'status-progress';
-    default: return 'status-pending';
+    case "completed":
+      return "status-completed";
+    case "failed":
+      return "status-failed";
+    case "cancelled":
+      return "status-failed";
+    case "in_progress":
+      return "status-progress";
+    case "paused":
+      return "status-progress";
+    default:
+      return "status-pending";
   }
 };
 
 const getStatusIcon = (status: string) => {
   switch (status) {
-    case 'completed': return '✓';
-    case 'failed': return '✗';
-    case 'in_progress': return '↻';
-    default: return '○';
+    case "completed":
+      return "✓";
+    case "failed":
+      return "✗";
+    case "cancelled":
+      return "⚠";
+    case "in_progress":
+      return "↻";
+    case "paused":
+      return "‖";
+    default:
+      return "○";
   }
 };
 
@@ -91,27 +130,59 @@ const handleClearHistory = async () => {
     <div class="history-header">
       <h3>
         <ClockIcon :size="18" />
-        {{ deviceId ? `History with ${deviceName || 'Device'}` : 'Transfer History' }}
+        {{
+          deviceId
+            ? `History with ${deviceName || "Device"}`
+            : "Transfer History"
+        }}
       </h3>
       <div class="header-actions">
-        <button class="icon-btn" @click="loadData" :disabled="isLoading" title="Refresh">
-          <RefreshCwIcon :size="16" :class="{'spinning': isLoading}" />
+        <button
+          class="icon-btn"
+          @click="loadData"
+          :disabled="isLoading"
+          title="Refresh"
+        >
+          <RefreshCwIcon :size="16" :class="{ spinning: isLoading }" />
         </button>
-        <button v-if="displayHistory.length > 0 && !deviceId" class="icon-btn danger" @click="showClearConfirm = true" title="Clear history">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <button
+          v-if="displayHistory.length > 0 && !deviceId"
+          class="icon-btn danger"
+          @click="showClearConfirm = true"
+          title="Clear history"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            <path
+              d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+            ></path>
           </svg>
         </button>
       </div>
     </div>
 
     <!-- Clear confirmation modal -->
-    <div v-if="showClearConfirm" class="confirm-overlay" @click.self="showClearConfirm = false">
+    <div
+      v-if="showClearConfirm"
+      class="confirm-overlay"
+      @click.self="showClearConfirm = false"
+    >
       <div class="confirm-modal">
         <p>Clear all transfer history?</p>
         <div class="confirm-actions">
-          <button class="btn-secondary" @click="showClearConfirm = false">Cancel</button>
+          <button class="btn-secondary" @click="showClearConfirm = false">
+            Cancel
+          </button>
           <button class="btn-danger" @click="handleClearHistory">Clear</button>
         </div>
       </div>
@@ -128,23 +199,45 @@ const handleClearHistory = async () => {
     </div>
 
     <div v-else class="history-list">
-      <div 
-        v-for="record in displayHistory" 
-        :key="record.id" 
+      <div
+        v-for="record in displayHistory"
+        :key="record.id"
         class="history-item"
       >
         <div class="item-icon" :class="record.direction">
-          <svg v-if="record.direction === 'send'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg
+            v-if="record.direction === 'send'"
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <line x1="22" y1="2" x2="11" y2="13"></line>
             <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
           </svg>
-          <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg
+            v-else
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
             <polyline points="7 10 12 15 17 10"></polyline>
             <line x1="12" y1="15" x2="12" y2="3"></line>
           </svg>
         </div>
-        
+
         <div class="item-details">
           <div class="file-name">{{ record.file_name }}</div>
           <div class="file-meta">
@@ -153,7 +246,7 @@ const handleClearHistory = async () => {
             <span class="date">{{ formatDate(record.created_at) }}</span>
           </div>
         </div>
-        
+
         <div class="item-status" :class="getStatusClass(record.status)">
           <span class="status-icon">{{ getStatusIcon(record.status) }}</span>
         </div>
@@ -164,7 +257,11 @@ const handleClearHistory = async () => {
 
 <style scoped>
 .history-container {
-  background: linear-gradient(135deg, rgba(30, 35, 45, 0.95), rgba(20, 25, 35, 0.98));
+  background: linear-gradient(
+    135deg,
+    rgba(30, 35, 45, 0.95),
+    rgba(20, 25, 35, 0.98)
+  );
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   overflow: hidden;
@@ -224,11 +321,16 @@ const handleClearHistory = async () => {
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
-.loading-state, .empty-state {
+.loading-state,
+.empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;

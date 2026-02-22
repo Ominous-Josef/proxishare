@@ -3,7 +3,7 @@ use bincode;
 use quinn::{Connection, RecvStream, SendStream};
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
@@ -21,6 +21,7 @@ pub struct TransferProgress {
     pub bytes_sent: u64,
     pub total_bytes: u64,
     pub direction: String,
+    pub status: String,
 }
 
 /// Calculate optimal chunk size based on file size
@@ -235,6 +236,7 @@ impl FileSender {
                     bytes_sent: total_sent,
                     total_bytes: file_size,
                     direction: "send".to_string(),
+                    status: "in_progress".to_string(),
                 },
             );
         }
@@ -251,24 +253,82 @@ impl FileSender {
         // 4. Signal that we're done sending data (but keep stream open for reading ACK)
         send_stream.finish()?;
 
-        // 5. Wait for acknowledgment from receiver before closing connection
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            Self::read_message(&mut recv_stream),
-        )
-        .await
-        {
-            Ok(Ok(MessageType::TransferCompleteAck {
-                transfer_id: ack_id,
-            })) if ack_id == transfer_id => {
-                // Give the receiver a moment to finish its side cleanly
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                Ok(())
+        // 5. Wait for acknowledgment or history sync from receiver
+        let mut completion_received = false;
+        while !completion_received {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                Self::read_message(&mut recv_stream),
+            )
+            .await
+            {
+                Ok(Ok(MessageType::TransferCompleteAck {
+                    transfer_id: ack_id,
+                })) if ack_id == transfer_id => {
+                    completion_received = true;
+                }
+                Ok(Ok(MessageType::HistorySync { records })) => {
+                    println!(
+                        "[Transfer] Received HistorySync ({} records) during completion",
+                        records.len()
+                    );
+                    let app_state = self.app_handle.state::<crate::AppState>();
+                    let db_lock = app_state.database.read().await;
+                    if let Some(db) = &*db_lock {
+                        for record in records {
+                            // Update local database with synced records
+                            let _ = db
+                                .record_transfer(
+                                    &record.id,
+                                    &record.device_id,
+                                    &record.file_name,
+                                    &record.file_path,
+                                    record.total_size,
+                                    &record.direction,
+                                    &record.file_hash,
+                                )
+                                .await
+                                .map_err(|e| println!("[Database] Record error: {:?}", e));
+                            let _ = db
+                                .update_transfer_status(
+                                    &record.id,
+                                    &record.status,
+                                    record.bytes_transferred,
+                                )
+                                .await
+                                .map_err(|e| println!("[Database] Status error: {:?}", e));
+                        }
+                    }
+                    // Notify frontend that history changed
+                    let _ = self.app_handle.emit("history-updated", ());
+                }
+                Ok(Ok(_)) => {
+                    return Err("Unexpected message while waiting for completion ack".into())
+                }
+                Ok(Err(e)) => return Err(format!("Failed to receive completion ack: {}", e).into()),
+                Err(_) => {
+                    return Err("Timeout waiting for transfer completion acknowledgment".into())
+                }
             }
-            Ok(Ok(_)) => Err("Unexpected message while waiting for completion ack".into()),
-            Ok(Err(e)) => Err(format!("Failed to receive completion ack: {}", e).into()),
-            Err(_) => Err("Timeout waiting for transfer completion acknowledgment".into()),
         }
+
+        // Emit final progress as completed
+        let _ = self.app_handle.emit(
+            "transfer-progress",
+            TransferProgress {
+                transfer_id: transfer_id.clone(),
+                file_name: file_name.clone(),
+                bytes_sent: file_size,
+                total_bytes: file_size,
+                direction: "send".to_string(),
+                status: "completed".to_string(),
+            },
+        );
+        let _ = self.app_handle.emit("history-updated", ());
+
+        // Give the receiver a moment to finish its side cleanly
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        Ok(())
     }
 
     async fn write_message(

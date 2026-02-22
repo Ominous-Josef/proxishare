@@ -183,7 +183,7 @@ const formatBytes = (bytes: number) => {
               v-if="t.status !== 'completed' && t.status !== 'cancelled'"
             >
               <button
-                v-if="t.status === 'in_progress' && t.direction === 'send'"
+                v-if="t.status === 'in_progress'"
                 class="control-btn"
                 title="Pause"
                 @click="pauseTransfer(t.id)"
