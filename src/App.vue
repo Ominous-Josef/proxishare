@@ -19,6 +19,8 @@ const pairingRequest = ref<{
   device: Device;
   isOpen: boolean;
   code?: string;
+  ip: string;
+  port: number;
 } | null>(null);
 const senderPairingCode = ref<string | null>(null);
 const selectedDevice = computed(
@@ -63,6 +65,8 @@ const handlePairConfirm = async (code: string) => {
       );
       await invoke("accept_pairing", {
         deviceId: pairingRequest.value.device.id,
+        ip: pairingRequest.value.ip,
+        port: pairingRequest.value.port,
       });
       pairingRequest.value.isOpen = false;
       alert(`Success! Device paired using code ${code}`);
@@ -75,12 +79,34 @@ const handlePairConfirm = async (code: string) => {
   }
 };
 
+const handleSyncHistory = async () => {
+  if (selectedDevice.value) {
+    try {
+      console.log(
+        "[Sync] Manually triggering history sync with:",
+        selectedDevice.value.id
+      );
+      await invoke("sync_history", {
+        deviceId: selectedDevice.value.id,
+        ip: selectedDevice.value.ip,
+        port: selectedDevice.value.port,
+      });
+      alert("History sync requested!");
+    } catch (e) {
+      console.error("[Sync] Failed:", e);
+      alert("Failed to sync history: " + e);
+    }
+  }
+};
+
 onMounted(async () => {
   await listen("pairing-request", (event: any) => {
     pairingRequest.value = {
       device: event.payload.device,
       isOpen: true,
       code: event.payload.code,
+      ip: event.payload.ip,
+      port: event.payload.port,
     };
   });
 });
@@ -153,6 +179,13 @@ onMounted(async () => {
           <span class="label">Connected to:</span>
           <span class="value">{{ selectedDevice.name }}</span>
           <span class="status-dot"></span>
+          <button
+            class="icon-btn sync-btn"
+            title="Sync History"
+            @click="handleSyncHistory"
+          >
+            🔄
+          </button>
         </div>
         <div v-else class="no-selection">Select a device to start sharing</div>
       </header>
@@ -318,6 +351,30 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1;
+}
+
+.sync-btn {
+  margin-left: auto;
+  margin-right: 1rem;
+  font-size: 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.sync-btn:hover {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--accent-color);
+  border-color: rgba(99, 102, 241, 0.2);
 }
 
 .label {

@@ -42,13 +42,22 @@ fn calculate_chunk_size(file_size: u64) -> usize {
 pub struct FileSender {
     connection: Connection,
     app_handle: tauri::AppHandle,
+    device_id: String,
+    device_name: String,
 }
 
 impl FileSender {
-    pub fn new(connection: Connection, app_handle: tauri::AppHandle) -> Self {
+    pub fn new(
+        connection: Connection,
+        app_handle: tauri::AppHandle,
+        device_id: String,
+        device_name: String,
+    ) -> Self {
         Self {
             connection,
             app_handle,
+            device_id,
+            device_name,
         }
     }
 
@@ -98,6 +107,8 @@ impl FileSender {
                 hash: file_hash,
                 chunk_size: chunk_size as u32,
             },
+            sender_id: self.device_id.clone(),
+            sender_name: self.device_name.clone(),
         };
         Self::write_message(&mut send_stream, &offer).await?;
 

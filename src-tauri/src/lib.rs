@@ -325,15 +325,63 @@ async fn cancel_transfer(
 #[tauri::command]
 async fn accept_pairing(
     device_id: String,
+    ip: String,
+    port: u16,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    println!("[Pairing] Accepting pairing for device: {}", device_id);
+    println!(
+        "[Pairing] Accepting pairing for device: {} at {}:{}",
+        device_id, ip, port
+    );
     let mut security = state.security.write().await;
     security
         .add_trusted(device_id.clone())
         .map_err(|e| e.to_string())?;
     println!("[Pairing] Device {} is now trusted", device_id);
+    drop(security);
+
+    // Trigger history sync
+    let _ = sync_history(state, device_id, ip, port).await;
+
     Ok(())
+}
+
+#[tauri::command]
+async fn sync_history(
+    state: tauri::State<'_, AppState>,
+    device_id: String,
+    ip: String,
+    port: u16,
+) -> Result<(), String> {
+    println!(
+        "[Sync] Syncing history with device: {} at {}:{}",
+        device_id, ip, port
+    );
+
+    let records = {
+        let db_lock = state.database.read().await;
+        if let Some(db) = &*db_lock {
+            db.get_transfer_history(100)
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            return Err("Database not initialized".to_string());
+        }
+    };
+
+    let tm_opt = state.transfer.read().await.clone();
+    if let Some(tm) = tm_opt {
+        tm.send_message(
+            ip,
+            port,
+            crate::transfer::protocol::MessageType::HistorySync { records },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Transfer manager not initialized".to_string())
+    }
 }
 
 #[tauri::command]
@@ -419,7 +467,7 @@ pub fn run() {
 
             // Initialize Database
             let db_path = app_data_dir.join("proxishare.db");
-            let database = tauri::async_runtime::block_on(async {
+            let database_opt = tauri::async_runtime::block_on(async {
                 match Database::new(&db_path).await {
                     Ok(db) => {
                         println!("Database initialized at {:?}", db_path);
@@ -431,6 +479,7 @@ pub fn run() {
                     }
                 }
             });
+            let database = Arc::new(RwLock::new(database_opt));
 
             // Initialize Device ID and Name
             let device_id_path = app_data_dir.join("device_id.txt");
@@ -453,7 +502,13 @@ pub fn run() {
                 println!("Inside block_on: Initializing TransferManager");
                 // Initialize Transfer Manager
                 let port = 51731;
-                let tm = TransferManager::new(port, app_handle.clone())?;
+                let tm = TransferManager::new(
+                    port,
+                    app_handle.clone(),
+                    database.clone(),
+                    device_id.clone(),
+                    device_name.clone(),
+                )?;
                 println!("Inside block_on: TransferManager initialized");
 
                 println!("Inside block_on: Initializing DiscoveryService");
@@ -482,7 +537,7 @@ pub fn run() {
                 transfer: Arc::new(RwLock::new(Some(transfer_manager))),
                 sync: Arc::new(RwLock::new(SyncState::new())),
                 security: Arc::new(RwLock::new(security)),
-                database: Arc::new(RwLock::new(database)),
+                database: database,
                 transfers: Arc::new(RwLock::new(HashMap::new())),
             });
 
@@ -510,7 +565,8 @@ pub fn run() {
             clear_transfer_history,
             pause_transfer,
             resume_transfer,
-            cancel_transfer
+            cancel_transfer,
+            sync_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

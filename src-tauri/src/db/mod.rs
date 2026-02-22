@@ -34,16 +34,14 @@ impl Database {
         }
 
         let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-        
+
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect(&db_url)
             .await?;
 
         // Run migrations
-        sqlx::query(schema::SCHEMA)
-            .execute(&pool)
-            .await?;
+        sqlx::query(schema::SCHEMA).execute(&pool).await?;
 
         Ok(Self { pool })
     }
@@ -59,10 +57,10 @@ impl Database {
         file_hash: &str,
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().timestamp();
-        
+
         sqlx::query(
             r#"
-            INSERT INTO transfers (id, device_id, file_name, file_path, total_size, direction, status, bytes_transferred, file_hash, created_at, updated_at)
+            INSERT OR IGNORE INTO transfers (id, device_id, file_name, file_path, total_size, direction, status, bytes_transferred, file_hash, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, 'in_progress', 0, ?, ?, ?)
             "#,
         )
@@ -88,7 +86,7 @@ impl Database {
         bytes_transferred: i64,
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().timestamp();
-        
+
         sqlx::query(
             r#"
             UPDATE transfers 

@@ -8,16 +8,23 @@ use crate::transfer::sender::FileSender;
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub struct TransferManager {
     endpoint: Endpoint,
     app_handle: tauri::AppHandle,
+    database: Arc<RwLock<Option<crate::db::Database>>>,
+    device_id: String,
+    device_name: String,
 }
 
 impl TransferManager {
     pub fn new(
         port: u16,
         app_handle: tauri::AppHandle,
+        database: Arc<RwLock<Option<crate::db::Database>>>,
+        device_id: String,
+        device_name: String,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let cert_manager = CertificateManager::generate_self_signed()?;
 
@@ -40,6 +47,9 @@ impl TransferManager {
         Ok(Self {
             endpoint,
             app_handle,
+            database,
+            device_id,
+            device_name,
         })
     }
 
@@ -53,11 +63,13 @@ impl TransferManager {
             println!("[Transfer] Incoming connection accepted");
             let save_dir = save_dir.clone();
             let app_handle = app_handle.clone();
+            let database = self.database.clone();
             tauri::async_runtime::spawn(async move {
                 match conn.await {
                     Ok(connection) => {
                         println!("[Transfer] Connection established from remote peer");
-                        let receiver = FileReceiver::new(save_dir, connection, app_handle);
+                        let receiver =
+                            FileReceiver::new(save_dir, connection, app_handle, database);
                         match receiver.handle_transfer().await {
                             Ok(_) => println!("[Transfer] File received successfully"),
                             Err(e) => println!("[Transfer] Error receiving file: {:?}", e),
@@ -150,7 +162,12 @@ impl TransferManager {
                 }
             };
 
-        let sender = FileSender::new(connection, self.app_handle.clone());
+        let sender = FileSender::new(
+            connection,
+            self.app_handle.clone(),
+            self.device_id.clone(),
+            self.device_name.clone(),
+        );
         println!("[Transfer] Starting file transfer with ID: {}", transfer_id);
 
         match sender

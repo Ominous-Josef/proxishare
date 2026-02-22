@@ -11,16 +11,26 @@ pub struct FileMetadata {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum MessageType {
     // Handshake
-    Hello { device_id: String, device_name: String },
+    Hello {
+        device_id: String,
+        device_name: String,
+    },
     HelloAck,
 
     // File transfer negotiation
     FileOffer {
         transfer_id: String,
         metadata: FileMetadata,
+        sender_id: String,
+        sender_name: String,
     },
-    FileAccept { transfer_id: String },
-    FileReject { transfer_id: String, reason: String },
+    FileAccept {
+        transfer_id: String,
+    },
+    FileReject {
+        transfer_id: String,
+        reason: String,
+    },
 
     // Data transfer
     ChunkData {
@@ -41,9 +51,16 @@ pub enum MessageType {
     },
 
     // Completion
-    TransferComplete { transfer_id: String },
-    TransferCompleteAck { transfer_id: String },
-    TransferError { transfer_id: String, message: String },
+    TransferComplete {
+        transfer_id: String,
+    },
+    TransferCompleteAck {
+        transfer_id: String,
+    },
+    TransferError {
+        transfer_id: String,
+        message: String,
+    },
 
     // Pairing
     PairRequest {
@@ -57,6 +74,9 @@ pub enum MessageType {
     },
 
     // Sync (placeholder for Phase 4)
+    HistorySync {
+        records: Vec<crate::db::TransferRecord>,
+    },
     SyncRequest {
         folder_path: String,
         files: Vec<FileMetadata>,
