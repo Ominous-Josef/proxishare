@@ -30,7 +30,7 @@ pub enum TransferStatus {
 pub type TransferRegistry = Arc<RwLock<HashMap<String, TransferStatus>>>;
 
 pub struct AppState {
-    pub discovery: Arc<RwLock<Option<DiscoveryService>>>,
+    pub discovery: Arc<RwLock<Option<Arc<DiscoveryService>>>>,
     pub transfer: Arc<RwLock<Option<Arc<TransferManager>>>>,
     pub sync: Arc<RwLock<SyncState>>,
     pub security: Arc<RwLock<SecurityService>>,
@@ -52,9 +52,9 @@ async fn start_discovery(state: tauri::State<'_, AppState>) -> Result<bool, Stri
 
 #[tauri::command]
 async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec<Device>, String> {
-    let discovery_lock = state.discovery.read().await;
-    if let Some(discovery) = &*discovery_lock {
-        Ok(discovery.get_devices().await)
+    let discovery = state.discovery.read().await.clone();
+    if let Some(ds) = discovery {
+        Ok(ds.get_devices().await)
     } else {
         Ok(vec![])
     }
@@ -107,8 +107,8 @@ async fn send_file(
         }
     }
 
-    let transfer_lock = state.transfer.read().await;
-    if let Some(tm) = &*transfer_lock {
+    let tm_opt = state.transfer.read().await.clone();
+    if let Some(tm) = tm_opt {
         // Convert result to Send-compatible type immediately
         let send_result: Result<(), String> = tm
             .send_file(
@@ -175,9 +175,9 @@ async fn test_device_connectivity(
     port: u16,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, String> {
-    let discovery_lock = state.discovery.read().await;
-    if let Some(discovery) = &*discovery_lock {
-        Ok(discovery.test_connectivity(&ip, port).await)
+    let discovery = state.discovery.read().await.clone();
+    if let Some(ds) = discovery {
+        Ok(ds.test_connectivity(&ip, port).await)
     } else {
         Ok(false)
     }
@@ -188,11 +188,11 @@ async fn find_reachable_device_ip(
     device_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let discovery_lock = state.discovery.read().await;
-    if let Some(discovery) = &*discovery_lock {
-        let devices = discovery.get_devices().await;
+    let discovery = state.discovery.read().await.clone();
+    if let Some(ds) = discovery {
+        let devices = ds.get_devices().await;
         if let Some(device) = devices.iter().find(|d| d.id == device_id) {
-            Ok(discovery.find_reachable_ip(device).await)
+            Ok(ds.find_reachable_ip(device).await)
         } else {
             Ok(None)
         }
@@ -233,9 +233,11 @@ async fn request_pairing(
     port: u16,
 ) -> Result<String, String> {
     // Generate a random 6-digit pairing code
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let pairing_code = format!("{:06}", rng.gen_range(0..1_000_000));
+    let pairing_code = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        format!("{:06}", rng.gen_range(0..1_000_000))
+    };
 
     // Get our device info for the pairing request
     let discovery_lock = state.discovery.read().await;
@@ -252,8 +254,8 @@ async fn request_pairing(
         .unwrap_or_else(|| "ProxiNode".to_string());
 
     // Send pairing request message
-    let transfer_lock = state.transfer.read().await;
-    if let Some(tm) = &*transfer_lock {
+    let tm_opt = state.transfer.read().await.clone();
+    if let Some(tm) = tm_opt {
         let _ = tm
             .send_message(
                 ip.clone(),
@@ -459,8 +461,8 @@ pub fn run() {
                 let ds = DiscoveryService::new(device_id, device_name, port)?;
                 println!("Inside block_on: DiscoveryService initialized");
 
-                Ok::<(DiscoveryService, Arc<TransferManager>), Box<dyn std::error::Error>>((
-                    ds,
+                Ok::<(Arc<DiscoveryService>, Arc<TransferManager>), Box<dyn std::error::Error>>((
+                    Arc::new(ds),
                     Arc::new(tm),
                 ))
             })?;
