@@ -154,6 +154,18 @@ impl FileReceiver {
                         &MessageType::TransferCompleteAck { transfer_id },
                     )
                     .await?;
+
+                    println!("[Transfer] Finishing send stream...");
+                    send_stream.finish()?;
+
+                    // Give QUIC time to flush the ACK bytes over the wire
+                    // before we return and the connection gets dropped
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                    // Explicitly close the connection gracefully
+                    self.connection
+                        .close(quinn::VarInt::from_u32(0), b"transfer complete");
+
                     println!("[Transfer] Transfer complete, breaking loop");
                     break;
                 }
