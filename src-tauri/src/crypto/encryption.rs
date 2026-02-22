@@ -8,7 +8,7 @@ pub struct CertificateManager {
 }
 
 impl CertificateManager {
-    pub fn generate_self_signed() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn generate_self_signed() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let cert_params = rcgen::CertificateParams::new(vec!["proxishare.local".to_string()]);
         let cert = rcgen::Certificate::from_params(cert_params)?;
 
@@ -18,7 +18,9 @@ impl CertificateManager {
         })
     }
 
-    pub fn get_server_config(&self) -> Result<rustls::ServerConfig, Box<dyn std::error::Error>> {
+    pub fn get_server_config(
+        &self,
+    ) -> Result<rustls::ServerConfig, Box<dyn std::error::Error + Send + Sync>> {
         let cert_der = CertificateDer::from(self.cert_der.clone());
         let key_der = PrivateKeyDer::try_from(self.key_der.clone())?;
 
@@ -33,7 +35,9 @@ impl CertificateManager {
         Ok(config)
     }
 
-    pub fn get_client_config(&self) -> Result<rustls::ClientConfig, Box<dyn std::error::Error>> {
+    pub fn get_client_config(
+        &self,
+    ) -> Result<rustls::ClientConfig, Box<dyn std::error::Error + Send + Sync>> {
         let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))

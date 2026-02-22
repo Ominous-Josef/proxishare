@@ -28,6 +28,7 @@ pub enum TransferStatus {
 }
 
 pub type TransferRegistry = Arc<RwLock<HashMap<String, TransferStatus>>>;
+pub type GenericError = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct AppState {
     pub discovery: Arc<RwLock<Option<Arc<DiscoveryService>>>>,
@@ -461,6 +462,9 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(&downloads_dir);
             }
 
+            // Initialize Transfer Registry (Status tracking)
+            let transfers: TransferRegistry = Arc::new(RwLock::new(HashMap::new()));
+
             // Initialize Security Service
             let app_data_dir = app_handle
                 .path()
@@ -512,6 +516,7 @@ pub fn run() {
                     port,
                     app_handle.clone(),
                     database.clone(),
+                    transfers.clone(),
                     device_id.clone(),
                     device_name.clone(),
                 )?;
@@ -522,11 +527,12 @@ pub fn run() {
                 let ds = DiscoveryService::new(device_id, device_name, port)?;
                 println!("Inside block_on: DiscoveryService initialized");
 
-                Ok::<(Arc<DiscoveryService>, Arc<TransferManager>), Box<dyn std::error::Error>>((
+                Ok::<(Arc<DiscoveryService>, Arc<TransferManager>), GenericError>((
                     Arc::new(ds),
                     Arc::new(tm),
                 ))
-            })?;
+            })
+            .map_err(|e| e as Box<dyn std::error::Error>)?;
 
             println!("Starting listening and broadcasting");
             let tm_clone = Arc::clone(&transfer_manager);
@@ -538,14 +544,15 @@ pub fn run() {
             let _ = discovery.start_broadcasting();
             let _ = discovery.start_discovery();
 
-            app.manage(AppState {
+            let app_state = AppState {
                 discovery: Arc::new(RwLock::new(Some(discovery))),
                 transfer: Arc::new(RwLock::new(Some(transfer_manager))),
                 sync: Arc::new(RwLock::new(SyncState::new())),
                 security: Arc::new(RwLock::new(security)),
-                database: database,
-                transfers: Arc::new(RwLock::new(HashMap::new())),
-            });
+                database: database.clone(),
+                transfers,
+            };
+            app.manage(app_state);
 
             println!("Setup hook finished");
             Ok(())

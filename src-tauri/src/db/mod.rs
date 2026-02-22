@@ -27,7 +27,7 @@ pub struct Database {
 }
 
 impl Database {
-    pub async fn new(db_path: &Path) -> Result<Self, sqlx::Error> {
+    pub async fn new(db_path: &Path) -> Result<Self, crate::GenericError> {
         // Ensure parent directory exists
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).ok();

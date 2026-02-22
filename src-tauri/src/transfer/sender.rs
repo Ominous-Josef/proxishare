@@ -61,10 +61,7 @@ impl FileSender {
         }
     }
 
-    pub async fn calculate_hash(
-        &self,
-        path: &PathBuf,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn calculate_hash(&self, path: &PathBuf) -> Result<String, crate::GenericError> {
         let mut file = File::open(path).await?;
         let mut hasher = blake3::Hasher::new();
         let mut buffer = vec![0u8; 64 * 1024];
@@ -85,7 +82,7 @@ impl FileSender {
         transfer_id: String,
         path: PathBuf,
         transfers: crate::TransferRegistry,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), crate::GenericError> {
         // Open a single bidirectional stream for the entire transfer
         let (mut send_stream, mut recv_stream) = self.connection.open_bi().await?;
 
@@ -117,6 +114,8 @@ impl FileSender {
         let mut chunk_index = 0;
         let mut total_sent: u64 = 0;
 
+        let mut last_status = crate::TransferStatus::InProgress;
+
         loop {
             // Check status for pause/cancel
             {
@@ -128,9 +127,46 @@ impl FileSender {
                         .unwrap_or(crate::TransferStatus::InProgress)
                 };
 
-                if status == crate::TransferStatus::Cancelled {
-                    println!("[Transfer] Transfer {} cancelled", transfer_id);
-                    return Err("Transfer cancelled by user".into());
+                // Notify receiver if status changed
+                if status != last_status {
+                    match status {
+                        crate::TransferStatus::Cancelled => {
+                            println!("[Transfer] Sending TransferCancel to receiver...");
+                            let _ = Self::write_message(
+                                &mut send_stream,
+                                &MessageType::TransferCancel {
+                                    transfer_id: transfer_id.clone(),
+                                },
+                            )
+                            .await;
+                            println!("[Transfer] Transfer {} cancelled by sender", transfer_id);
+                            return Err("Transfer cancelled by user".into());
+                        }
+                        crate::TransferStatus::Paused => {
+                            println!("[Transfer] Sending TransferPause to receiver...");
+                            let _ = Self::write_message(
+                                &mut send_stream,
+                                &MessageType::TransferPause {
+                                    transfer_id: transfer_id.clone(),
+                                },
+                            )
+                            .await;
+                        }
+                        crate::TransferStatus::InProgress
+                            if last_status == crate::TransferStatus::Paused =>
+                        {
+                            println!("[Transfer] Sending TransferResume to receiver...");
+                            let _ = Self::write_message(
+                                &mut send_stream,
+                                &MessageType::TransferResume {
+                                    transfer_id: transfer_id.clone(),
+                                },
+                            )
+                            .await;
+                        }
+                        _ => {}
+                    }
+                    last_status = status;
                 }
 
                 while status == crate::TransferStatus::Paused {
@@ -142,8 +178,27 @@ impl FileSender {
                         .unwrap_or(crate::TransferStatus::InProgress);
 
                     if status == crate::TransferStatus::Cancelled {
-                        println!("[Transfer] Transfer {} cancelled while paused", transfer_id);
+                        println!("[Transfer] Sending TransferCancel to receiver while paused...");
+                        let _ = Self::write_message(
+                            &mut send_stream,
+                            &MessageType::TransferCancel {
+                                transfer_id: transfer_id.clone(),
+                            },
+                        )
+                        .await;
                         return Err("Transfer cancelled by user".into());
+                    }
+
+                    if status == crate::TransferStatus::InProgress {
+                        println!("[Transfer] Resuming, sending TransferResume...");
+                        let _ = Self::write_message(
+                            &mut send_stream,
+                            &MessageType::TransferResume {
+                                transfer_id: transfer_id.clone(),
+                            },
+                        )
+                        .await;
+                        last_status = status;
                     }
                 }
             }
@@ -219,7 +274,7 @@ impl FileSender {
     async fn write_message(
         stream: &mut SendStream,
         msg: &MessageType,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), crate::GenericError> {
         let data = bincode::serialize(msg)?;
         let len = data.len() as u32;
         stream.write_all(&len.to_be_bytes()).await?;
@@ -227,9 +282,7 @@ impl FileSender {
         Ok(())
     }
 
-    async fn read_message(
-        stream: &mut RecvStream,
-    ) -> Result<MessageType, Box<dyn std::error::Error + Send + Sync>> {
+    async fn read_message(stream: &mut RecvStream) -> Result<MessageType, crate::GenericError> {
         let mut len_buf = [0u8; 4];
         stream.read_exact(&mut len_buf).await?;
         let len = u32::from_be_bytes(len_buf) as usize;

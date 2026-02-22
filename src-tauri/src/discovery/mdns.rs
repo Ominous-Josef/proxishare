@@ -37,7 +37,7 @@ impl DiscoveryService {
         device_id: String,
         device_name: String,
         port: u16,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, crate::GenericError> {
         let mdns = ServiceDaemon::new()?;
 
         Ok(Self {
@@ -49,7 +49,7 @@ impl DiscoveryService {
         })
     }
 
-    pub fn start_broadcasting(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn start_broadcasting(&self) -> Result<(), crate::GenericError> {
         let service_type = "_proxishare._tcp.local.";
         let instance_name = format!("{}_{}", self.device_name, &self.device_id[..8]);
 
@@ -108,7 +108,7 @@ impl DiscoveryService {
         }
     }
 
-    pub fn start_discovery(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn start_discovery(&self) -> Result<(), crate::GenericError> {
         let service_type = "_proxishare._tcp.local.";
         let receiver = self.mdns.browse(service_type)?;
 

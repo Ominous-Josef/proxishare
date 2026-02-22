@@ -14,6 +14,7 @@ pub struct TransferManager {
     endpoint: Endpoint,
     app_handle: tauri::AppHandle,
     database: Arc<RwLock<Option<crate::db::Database>>>,
+    transfers: crate::TransferRegistry,
     device_id: String,
     device_name: String,
 }
@@ -23,9 +24,10 @@ impl TransferManager {
         port: u16,
         app_handle: tauri::AppHandle,
         database: Arc<RwLock<Option<crate::db::Database>>>,
+        transfers: crate::TransferRegistry,
         device_id: String,
         device_name: String,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, crate::GenericError> {
         let cert_manager = CertificateManager::generate_self_signed()?;
 
         let server_crypto = Arc::new(quinn::crypto::rustls::QuicServerConfig::try_from(
@@ -48,6 +50,7 @@ impl TransferManager {
             endpoint,
             app_handle,
             database,
+            transfers,
             device_id,
             device_name,
         })
@@ -64,12 +67,14 @@ impl TransferManager {
             let save_dir = save_dir.clone();
             let app_handle = app_handle.clone();
             let database = self.database.clone();
+            let transfers = self.transfers.clone();
             tauri::async_runtime::spawn(async move {
                 match conn.await {
                     Ok(connection) => {
                         println!("[Transfer] Connection established from remote peer");
-                        let receiver =
-                            FileReceiver::new(save_dir, connection, app_handle, database);
+                        let receiver = FileReceiver::new(
+                            save_dir, connection, app_handle, database, transfers,
+                        );
                         match receiver.handle_transfer().await {
                             Ok(_) => println!("[Transfer] File received successfully"),
                             Err(e) => println!("[Transfer] Error receiving file: {:?}", e),

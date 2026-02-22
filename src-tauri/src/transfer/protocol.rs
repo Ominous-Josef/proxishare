@@ -61,6 +61,15 @@ pub enum MessageType {
         transfer_id: String,
         message: String,
     },
+    TransferPause {
+        transfer_id: String,
+    },
+    TransferResume {
+        transfer_id: String,
+    },
+    TransferCancel {
+        transfer_id: String,
+    },
 
     // Pairing
     PairRequest {
