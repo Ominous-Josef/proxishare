@@ -117,9 +117,11 @@ impl TransferManager {
 
     pub async fn send_file(
         &self,
+        transfer_id: String,
         target_ip: String,
         target_port: u16,
         file_path: PathBuf,
+        transfers: crate::TransferRegistry,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!(
             "[Transfer] Attempting to send file {:?} to {}:{}",
@@ -149,11 +151,10 @@ impl TransferManager {
             };
 
         let sender = FileSender::new(connection, self.app_handle.clone());
-        let transfer_id = uuid::Uuid::new_v4().to_string();
         println!("[Transfer] Starting file transfer with ID: {}", transfer_id);
 
         match sender
-            .send_file(transfer_id.clone(), file_path.clone())
+            .send_file(transfer_id.clone(), file_path.clone(), transfers)
             .await
         {
             Ok(_) => {

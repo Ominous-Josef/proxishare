@@ -75,6 +75,7 @@ impl FileSender {
         &self,
         transfer_id: String,
         path: PathBuf,
+        transfers: crate::TransferRegistry,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Open a single bidirectional stream for the entire transfer
         let (mut send_stream, mut recv_stream) = self.connection.open_bi().await?;
@@ -106,8 +107,41 @@ impl FileSender {
         let mut total_sent: u64 = 0;
 
         loop {
+            // Check status for pause/cancel
+            {
+                let mut status = {
+                    let registry = transfers.read().await;
+                    registry
+                        .get(&transfer_id)
+                        .cloned()
+                        .unwrap_or(crate::TransferStatus::InProgress)
+                };
+
+                if status == crate::TransferStatus::Cancelled {
+                    println!("[Transfer] Transfer {} cancelled", transfer_id);
+                    return Err("Transfer cancelled by user".into());
+                }
+
+                while status == crate::TransferStatus::Paused {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let registry = transfers.read().await;
+                    status = registry
+                        .get(&transfer_id)
+                        .cloned()
+                        .unwrap_or(crate::TransferStatus::InProgress);
+
+                    if status == crate::TransferStatus::Cancelled {
+                        println!("[Transfer] Transfer {} cancelled while paused", transfer_id);
+                        return Err("Transfer cancelled by user".into());
+                    }
+                }
+            }
+
             let n = file.read(&mut buffer).await?;
             if n == 0 {
+                // Mark as completed in registry
+                let mut registry = transfers.write().await;
+                registry.insert(transfer_id.clone(), crate::TransferStatus::Completed);
                 break;
             }
 

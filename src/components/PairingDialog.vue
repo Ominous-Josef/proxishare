@@ -4,6 +4,7 @@ import { ref } from "vue";
 defineProps<{
   deviceName: string;
   isOpen: boolean;
+  expectedCode?: string;
 }>();
 
 const emit = defineEmits<{
@@ -36,6 +37,9 @@ const onConfirm = () => {
           <p class="instruction">
             Enter the 6-digit code shown on the other device to authorize the
             connection.
+            <span v-if="expectedCode" class="expected-hint">
+              (Expected: {{ expectedCode }})
+            </span>
           </p>
 
           <input

@@ -10,7 +10,8 @@ const props = defineProps<{
   targetPort: number | null;
 }>();
 
-const { transfers, sendFile } = useFileTransfer();
+const { transfers, sendFile, pauseTransfer, resumeTransfer, cancelTransfer } =
+  useFileTransfer();
 const isSending = ref(false);
 const statusMessage = ref<string | null>(null);
 
@@ -37,17 +38,45 @@ const selectAndSend = async () => {
     if (selected && typeof selected === "string") {
       isSending.value = true;
       statusMessage.value = "Sending file...";
-      console.log("Sending file:", selected, "to", props.targetIp, props.targetPort);
-      await sendFile(props.deviceId, selected, props.targetIp, props.targetPort);
+      console.log(
+        "Sending file:",
+        selected,
+        "to",
+        props.targetIp,
+        props.targetPort
+      );
+      await sendFile(
+        props.deviceId,
+        selected,
+        props.targetIp,
+        props.targetPort
+      );
       console.log("File send completed");
       statusMessage.value = "File sent successfully!";
-      setTimeout(() => { statusMessage.value = null; }, 3000);
+      setTimeout(() => {
+        statusMessage.value = null;
+      }, 3000);
     }
   } catch (error) {
     console.error("Error selecting/sending file:", error);
     statusMessage.value = "Failed: " + String(error);
   } finally {
     isSending.value = false;
+  }
+};
+
+const handleRetry = async (t: any) => {
+  if (t.filePath && props.deviceId && props.targetIp && props.targetPort) {
+    try {
+      await sendFile(
+        props.deviceId,
+        t.filePath,
+        props.targetIp,
+        props.targetPort
+      );
+    } catch (e) {
+      console.error("Retry failed:", e);
+    }
   }
 };
 
@@ -91,7 +120,11 @@ const formatBytes = (bytes: number) => {
 
     <div class="transfer-body">
       <div class="actions">
-        <button class="select-btn" :disabled="!deviceId || isSending" @click="selectAndSend">
+        <button
+          class="select-btn"
+          :disabled="!deviceId || isSending"
+          @click="selectAndSend"
+        >
           <svg
             v-if="!isSending"
             xmlns="http://www.w3.org/2000/svg"
@@ -109,11 +142,20 @@ const formatBytes = (bytes: number) => {
             <line x1="12" y1="3" x2="12" y2="15"></line>
           </svg>
           <span v-else class="spinner-small"></span>
-          {{ isSending ? 'Sending...' : 'Select File to Send' }}
+          {{ isSending ? "Sending..." : "Select File to Send" }}
         </button>
       </div>
 
-      <div v-if="statusMessage" class="status-message" :class="{ error: statusMessage.startsWith('Failed') || statusMessage.startsWith('Error'), success: statusMessage.includes('success') }">
+      <div
+        v-if="statusMessage"
+        class="status-message"
+        :class="{
+          error:
+            statusMessage.startsWith('Failed') ||
+            statusMessage.startsWith('Error'),
+          success: statusMessage.includes('success'),
+        }"
+      >
         {{ statusMessage }}
       </div>
 
@@ -122,21 +164,86 @@ const formatBytes = (bytes: number) => {
           <p>No active transfers</p>
         </div>
 
-        <div v-for="t in transfers" :key="t.id" class="transfer-item" :class="t.direction">
+        <div
+          v-for="t in transfers"
+          :key="t.id"
+          class="transfer-item"
+          :class="t.direction"
+        >
           <div class="item-header">
             <div class="filename-row">
-              <span class="direction-icon" v-if="t.direction === 'send'">↑</span>
+              <span class="direction-icon" v-if="t.direction === 'send'"
+                >↑</span
+              >
               <span class="direction-icon" v-else>↓</span>
-              <span class="filename">{{ t.fileName }}</span>
+              <span class="filename" :title="t.fileName">{{ t.fileName }}</span>
             </div>
-            <span class="percentage">{{ t.progress }}%</span>
+            <div
+              class="transfer-controls"
+              v-if="t.status !== 'completed' && t.status !== 'cancelled'"
+            >
+              <button
+                v-if="t.status === 'in_progress' && t.direction === 'send'"
+                class="control-btn"
+                title="Pause"
+                @click="pauseTransfer(t.id)"
+              >
+                ⏸
+              </button>
+              <button
+                v-else-if="t.status === 'paused'"
+                class="control-btn"
+                title="Resume"
+                @click="resumeTransfer(t.id)"
+              >
+                ▶
+              </button>
+              <button
+                v-if="t.status === 'failed' && t.direction === 'send'"
+                class="control-btn retry"
+                title="Retry"
+                @click="handleRetry(t)"
+              >
+                🔄
+              </button>
+              <button
+                class="control-btn cancel"
+                title="Cancel"
+                @click="cancelTransfer(t.id)"
+              >
+                ✕
+              </button>
+            </div>
+            <span class="percentage" v-else-if="t.status === 'completed'"
+              >100%</span
+            >
+            <span class="percentage" v-else>{{ t.progress }}%</span>
           </div>
           <div class="progress-bar">
-            <div class="fill" :class="t.direction" :style="{ width: t.progress + '%' }"></div>
+            <div
+              class="fill"
+              :class="[t.direction, t.status]"
+              :style="{ width: t.progress + '%' }"
+            ></div>
           </div>
           <div class="item-meta">
-            <span>{{ formatBytes(t.bytesTransferred) }} / {{ formatBytes(t.totalBytes) }}</span>
-            <span class="status-label">{{ t.direction === 'send' ? 'Uploading' : 'Downloading' }}</span>
+            <span
+              >{{ formatBytes(t.bytesTransferred) }} /
+              {{ formatBytes(t.totalBytes) }}</span
+            >
+            <span class="status-label" :class="t.status">
+              {{
+                t.status === "paused"
+                  ? "Paused"
+                  : t.status === "failed"
+                  ? "Failed"
+                  : t.status === "cancelled"
+                  ? "Cancelled"
+                  : t.direction === "send"
+                  ? "Uploading"
+                  : "Downloading"
+              }}
+            </span>
           </div>
         </div>
       </div>
@@ -151,6 +258,7 @@ const formatBytes = (bytes: number) => {
   border-radius: 16px;
   overflow: hidden;
   max-width: 500px;
+  width: 100%;
   margin: 0 auto;
 }
 
@@ -311,6 +419,61 @@ const formatBytes = (bytes: number) => {
   text-transform: uppercase;
   font-size: 0.7rem;
   letter-spacing: 0.5px;
+}
+
+.status-label.paused {
+  color: #f59e0b;
+}
+.status-label.failed {
+  color: #ef4444;
+}
+.status-label.cancelled {
+  color: #94a3b8;
+}
+
+.transfer-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.control-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: white;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 10px;
+  transition: all 0.2s;
+}
+
+.control-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.control-btn.cancel:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.control-btn.retry:hover {
+  background: rgba(99, 102, 241, 0.2);
+  color: #6366f1;
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.fill.paused {
+  background: #f59e0b;
+}
+
+.fill.failed {
+  background: #ef4444;
 }
 
 .empty {

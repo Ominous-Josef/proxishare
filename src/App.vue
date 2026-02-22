@@ -15,8 +15,12 @@ const { devices, isDiscovering, refreshDevices } = useDevices();
 const selectedId = ref<string | null>(null);
 const currentView = ref<"devices" | "history" | "support">("devices");
 
-const pairingRequest = ref<{ device: Device; isOpen: boolean } | null>(null);
-
+const pairingRequest = ref<{
+  device: Device;
+  isOpen: boolean;
+  code?: string;
+} | null>(null);
+const senderPairingCode = ref<string | null>(null);
 const selectedDevice = computed(
   () => devices.value.find((d) => d.id === selectedId.value) || null
 );
@@ -34,13 +38,13 @@ const handlePair = async (id: string) => {
   if (device) {
     try {
       console.log("[Pairing] Requesting pairing with device:", id);
-      await invoke("request_pairing", {
+      const code = await invoke<string>("request_pairing", {
         deviceId: id,
         ip: device.ip,
         port: device.port,
       });
-      console.log("[Pairing] Pairing successful");
-      alert("Device paired successfully!");
+      console.log("[Pairing] Pairing initiated, code:", code);
+      senderPairingCode.value = code;
       // Refresh device list to update trust status
       await refreshDevices();
     } catch (e) {
@@ -76,6 +80,7 @@ onMounted(async () => {
     pairingRequest.value = {
       device: event.payload.device,
       isOpen: true,
+      code: event.payload.code,
     };
   });
 });
@@ -183,9 +188,37 @@ onMounted(async () => {
       v-if="pairingRequest"
       :is-open="pairingRequest.isOpen"
       :device-name="pairingRequest.device.name"
+      :expected-code="pairingRequest.code"
       @close="pairingRequest.isOpen = false"
       @confirm="handlePairConfirm"
     />
+
+    <!-- Sender Pairing Code Modal -->
+    <Transition name="fade">
+      <div
+        v-if="senderPairingCode"
+        class="modal-overlay"
+        @click.self="senderPairingCode = null"
+      >
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Pairing Code</h3>
+            <button class="close-btn" @click="senderPairingCode = null">
+              &times;
+            </button>
+          </div>
+          <div class="modal-body">
+            <p>Enter this code on the other device to pair:</p>
+            <div class="pairing-code-display">{{ senderPairingCode }}</div>
+          </div>
+          <div class="modal-footer">
+            <button class="confirm-btn" @click="senderPairingCode = null">
+              Done
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -394,5 +427,78 @@ body {
 
 .primary-btn:hover {
   opacity: 0.9;
+}
+
+.pairing-code-display {
+  font-size: 3rem;
+  font-weight: 800;
+  letter-spacing: 0.5rem;
+  color: var(--accent-color);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 1.5rem;
+  border-radius: 12px;
+  margin: 1.5rem 0;
+  font-family: monospace;
+}
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  width: 400px;
+  max-width: 90%;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+  padding: 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-header h3 {
+  margin: 0;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+.modal-body {
+  padding: 2rem 1.5rem;
+  text-align: center;
+}
+
+.modal-footer {
+  padding: 1.5rem;
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 </style>

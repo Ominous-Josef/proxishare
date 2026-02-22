@@ -9,8 +9,15 @@ export interface Transfer {
   totalBytes: number;
   bytesTransferred: number;
   progress: number;
-  status: "pending" | "in_progress" | "completed" | "failed";
+  status:
+    | "pending"
+    | "in_progress"
+    | "completed"
+    | "failed"
+    | "paused"
+    | "cancelled";
   direction: "send" | "receive";
+  filePath?: string;
   speed?: number;
 }
 
@@ -46,35 +53,39 @@ export function useFileTransfer() {
   // Setup progress listener
   const setupProgressListener = async () => {
     if (unlistenProgress) return; // Already listening
-    
-    unlistenProgress = await listen<TransferProgress>("transfer-progress", (event) => {
-      const progress = event.payload;
-      const percent = progress.total_bytes > 0 
-        ? Math.round((progress.bytes_sent / progress.total_bytes) * 100) 
-        : 0;
-      
-      const transfer: Transfer = {
-        id: progress.transfer_id,
-        deviceId: "",
-        fileName: progress.file_name,
-        totalBytes: progress.total_bytes,
-        bytesTransferred: progress.bytes_sent,
-        progress: percent,
-        status: percent >= 100 ? "completed" : "in_progress",
-        direction: progress.direction as "send" | "receive",
-      };
-      
-      activeTransfers.value.set(progress.transfer_id, transfer);
-      transfers.value = Array.from(activeTransfers.value.values());
-      
-      // Remove completed transfers after a delay
-      if (percent >= 100) {
-        setTimeout(() => {
-          activeTransfers.value.delete(progress.transfer_id);
-          transfers.value = Array.from(activeTransfers.value.values());
-        }, 3000);
+
+    unlistenProgress = await listen<TransferProgress>(
+      "transfer-progress",
+      (event) => {
+        const progress = event.payload;
+        const percent =
+          progress.total_bytes > 0
+            ? Math.round((progress.bytes_sent / progress.total_bytes) * 100)
+            : 0;
+
+        const transfer: Transfer = {
+          id: progress.transfer_id,
+          deviceId: "",
+          fileName: progress.file_name,
+          totalBytes: progress.total_bytes,
+          bytesTransferred: progress.bytes_sent,
+          progress: percent,
+          status: percent >= 100 ? "completed" : "in_progress",
+          direction: progress.direction as "send" | "receive",
+        };
+
+        activeTransfers.value.set(progress.transfer_id, transfer);
+        transfers.value = Array.from(activeTransfers.value.values());
+
+        // Remove completed transfers after a delay
+        if (percent >= 100) {
+          setTimeout(() => {
+            activeTransfers.value.delete(progress.transfer_id);
+            transfers.value = Array.from(activeTransfers.value.values());
+          }, 3000);
+        }
       }
-    });
+    );
   };
 
   // Auto-setup listener
@@ -94,7 +105,12 @@ export function useFileTransfer() {
     ip: string,
     port: number
   ) => {
-    console.log("[FileTransfer] Invoking send_file:", { deviceId, ip, port, path: filePath });
+    console.log("[FileTransfer] Invoking send_file:", {
+      deviceId,
+      ip,
+      port,
+      path: filePath,
+    });
     try {
       await invoke("send_file", {
         deviceId,
@@ -102,6 +118,15 @@ export function useFileTransfer() {
         port,
         path: filePath,
       });
+
+      // Update local transfer state with file path for retry
+      const t = Array.from(activeTransfers.value.values()).find(
+        (t) => t.fileName === filePath.split(/[\\/]/).pop()
+      );
+      if (t) {
+        t.filePath = filePath;
+      }
+
       console.log("[FileTransfer] send_file completed successfully");
       // Refresh history after successful transfer
       await loadHistory();
@@ -125,9 +150,12 @@ export function useFileTransfer() {
   ) => {
     try {
       // First, try to find a reachable IP for this device
-      const reachableIp = await invoke<string | null>("find_reachable_device_ip", { deviceId });
+      const reachableIp = await invoke<string | null>(
+        "find_reachable_device_ip",
+        { deviceId }
+      );
       const ipToUse = reachableIp || primaryIp;
-      
+
       await invoke("send_file", {
         deviceId,
         ip: ipToUse,
@@ -144,7 +172,9 @@ export function useFileTransfer() {
 
   const loadHistory = async (limit?: number) => {
     try {
-      const records = await invoke<TransferRecord[]>("get_transfer_history", { limit: limit ?? 100 });
+      const records = await invoke<TransferRecord[]>("get_transfer_history", {
+        limit: limit ?? 100,
+      });
       history.value = records;
     } catch (e) {
       console.error("Failed to load transfer history:", e);
@@ -153,9 +183,9 @@ export function useFileTransfer() {
 
   const loadDeviceHistory = async (deviceId: string, limit?: number) => {
     try {
-      const records = await invoke<TransferRecord[]>("get_device_transfers", { 
-        deviceId, 
-        limit: limit ?? 50 
+      const records = await invoke<TransferRecord[]>("get_device_transfers", {
+        deviceId,
+        limit: limit ?? 50,
       });
       return records;
     } catch (e) {
@@ -169,7 +199,44 @@ export function useFileTransfer() {
       await invoke("clear_transfer_history");
       history.value = [];
     } catch (e) {
-      console.error("Failed to clear transfer history:", e);
+      console.error("Failed to clear history:", e);
+    }
+  };
+
+  const pauseTransfer = async (transferId: string) => {
+    try {
+      await invoke("pause_transfer", { transferId });
+      const t = activeTransfers.value.get(transferId);
+      if (t) {
+        t.status = "paused";
+        transfers.value = Array.from(activeTransfers.value.values());
+      }
+    } catch (e) {
+      console.error("Failed to pause transfer:", e);
+    }
+  };
+
+  const resumeTransfer = async (transferId: string) => {
+    try {
+      await invoke("resume_transfer", { transferId });
+      const t = activeTransfers.value.get(transferId);
+      if (t) {
+        t.status = "in_progress";
+        transfers.value = Array.from(activeTransfers.value.values());
+      }
+    } catch (e) {
+      console.error("Failed to resume transfer:", e);
+    }
+  };
+
+  const cancelTransfer = async (transferId: string) => {
+    try {
+      await invoke("cancel_transfer", { transferId });
+      activeTransfers.value.delete(transferId);
+      transfers.value = Array.from(activeTransfers.value.values());
+      await loadHistory();
+    } catch (e) {
+      console.error("Failed to cancel transfer:", e);
     }
   };
 
@@ -181,5 +248,8 @@ export function useFileTransfer() {
     loadHistory,
     loadDeviceHistory,
     clearHistory,
+    pauseTransfer,
+    resumeTransfer,
+    cancelTransfer,
   };
 }

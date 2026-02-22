@@ -39,4 +39,5 @@ fs2 = "0.4"
 rcgen = "0.12"
 if-addrs = "0.13"
 hostname = "0.4.2"
+rand = "0.8.5"
 

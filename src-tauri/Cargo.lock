@@ -4672,6 +4672,7 @@ dependencies = [
  "notify",
  "parking_lot",
  "quinn",
+ "rand 0.8.5",
  "rcgen",
  "rustls",
  "serde",

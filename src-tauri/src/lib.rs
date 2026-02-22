@@ -16,6 +16,18 @@ use tokio::sync::RwLock;
 
 use crate::crypto::security::SecurityService;
 use crate::sync::SyncState;
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TransferStatus {
+    InProgress,
+    Paused,
+    Cancelled,
+    Completed,
+    Failed,
+}
+
+pub type TransferRegistry = Arc<RwLock<HashMap<String, TransferStatus>>>;
 
 pub struct AppState {
     pub discovery: Arc<RwLock<Option<DiscoveryService>>>,
@@ -23,6 +35,7 @@ pub struct AppState {
     pub sync: Arc<RwLock<SyncState>>,
     pub security: Arc<RwLock<SecurityService>>,
     pub database: Arc<RwLock<Option<Database>>>,
+    pub transfers: TransferRegistry,
 }
 
 #[tauri::command]
@@ -70,6 +83,12 @@ async fn send_file(
 
     let transfer_id = uuid::Uuid::new_v4().to_string();
 
+    // Track transfer in registry
+    {
+        let mut transfers = state.transfers.write().await;
+        transfers.insert(transfer_id.clone(), TransferStatus::InProgress);
+    }
+
     // Record the transfer start in database
     {
         let db_lock = state.database.read().await;
@@ -92,17 +111,25 @@ async fn send_file(
     if let Some(tm) = &*transfer_lock {
         // Convert result to Send-compatible type immediately
         let send_result: Result<(), String> = tm
-            .send_file(ip.clone(), port, file_path)
+            .send_file(
+                transfer_id.clone(),
+                ip.clone(),
+                port,
+                file_path,
+                state.transfers.clone(),
+            )
             .await
             .map_err(|e| e.to_string());
-
-        let is_success = send_result.is_ok();
 
         // Update transfer status
         {
             let db_lock = state.database.read().await;
             if let Some(db) = &*db_lock {
-                let status = if is_success { "completed" } else { "failed" };
+                let status = match &send_result {
+                    Ok(_) => "completed",
+                    Err(e) if e.contains("cancelled") => "cancelled",
+                    Err(_) => "failed",
+                };
                 let _ = db
                     .update_transfer_status(&transfer_id, status, file_size)
                     .await;
@@ -204,11 +231,11 @@ async fn request_pairing(
     device_id: String,
     ip: String,
     port: u16,
-) -> Result<(), String> {
-    println!(
-        "[Pairing] Sending pairing request to {} ({}:{})",
-        device_id, ip, port
-    );
+) -> Result<String, String> {
+    // Generate a random 6-digit pairing code
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let pairing_code = format!("{:06}", rng.gen_range(0..1_000_000));
 
     // Get our device info for the pairing request
     let discovery_lock = state.discovery.read().await;
@@ -234,7 +261,7 @@ async fn request_pairing(
                 crate::transfer::protocol::MessageType::PairRequest {
                     device_id: my_id,
                     device_name: my_name,
-                    pairing_code: "0000".to_string(), // Fixed for now, could be random
+                    pairing_code: pairing_code.clone(),
                 },
             )
             .await
@@ -242,15 +269,55 @@ async fn request_pairing(
     }
 
     // For now, just trust the device directly (simplified pairing)
-    // In a full implementation, we'd send a pairing request over the network
-    // and wait for the other device to accept
     let mut security = state.security.write().await;
     security
         .add_trusted(device_id.clone())
         .map_err(|e| e.to_string())?;
 
     println!("[Pairing] Device {} added to trusted devices", device_id);
-    Ok(())
+    Ok(pairing_code)
+}
+
+#[tauri::command]
+async fn pause_transfer(
+    state: tauri::State<'_, AppState>,
+    transfer_id: String,
+) -> Result<(), String> {
+    let mut transfers = state.transfers.write().await;
+    if transfers.contains_key(&transfer_id) {
+        transfers.insert(transfer_id, TransferStatus::Paused);
+        Ok(())
+    } else {
+        Err("Transfer not found".to_string())
+    }
+}
+
+#[tauri::command]
+async fn resume_transfer(
+    state: tauri::State<'_, AppState>,
+    transfer_id: String,
+) -> Result<(), String> {
+    let mut transfers = state.transfers.write().await;
+    if transfers.contains_key(&transfer_id) {
+        transfers.insert(transfer_id, TransferStatus::InProgress);
+        Ok(())
+    } else {
+        Err("Transfer not found".to_string())
+    }
+}
+
+#[tauri::command]
+async fn cancel_transfer(
+    state: tauri::State<'_, AppState>,
+    transfer_id: String,
+) -> Result<(), String> {
+    let mut transfers = state.transfers.write().await;
+    if transfers.contains_key(&transfer_id) {
+        transfers.insert(transfer_id, TransferStatus::Cancelled);
+        Ok(())
+    } else {
+        Err("Transfer not found".to_string())
+    }
 }
 
 #[tauri::command]
@@ -414,6 +481,7 @@ pub fn run() {
                 sync: Arc::new(RwLock::new(SyncState::new())),
                 security: Arc::new(RwLock::new(security)),
                 database: Arc::new(RwLock::new(database)),
+                transfers: Arc::new(RwLock::new(HashMap::new())),
             });
 
             println!("Setup hook finished");
@@ -437,7 +505,10 @@ pub fn run() {
             get_sync_status,
             get_transfer_history,
             get_device_transfers,
-            clear_transfer_history
+            clear_transfer_history,
+            pause_transfer,
+            resume_transfer,
+            cancel_transfer
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
