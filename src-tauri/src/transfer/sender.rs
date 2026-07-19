@@ -110,6 +110,38 @@ impl FileSender {
         };
         Self::write_message(&mut send_stream, &offer).await?;
 
+        // Wait for FileAccept or FileReject
+        println!("[Transfer] Waiting for receiver to accept file...");
+        let acceptance_timeout = std::time::Duration::from_secs(300); // 5 minutes
+        match tokio::time::timeout(
+            acceptance_timeout,
+            Self::read_message(&mut recv_stream),
+        ).await {
+            Ok(Ok(MessageType::FileAccept { transfer_id: ack_id })) if ack_id == transfer_id => {
+                println!("[Transfer] Receiver accepted the file. Starting chunks...");
+            }
+            Ok(Ok(MessageType::FileReject { transfer_id: _, reason })) => {
+                println!("[Transfer] Receiver rejected the file: {}", reason);
+                let mut registry = transfers.write().await;
+                registry.insert(transfer_id.clone(), crate::TransferStatus::Cancelled);
+                return Err(format!("Transfer rejected: {}", reason).into());
+            }
+            Ok(Ok(MessageType::TransferError { transfer_id: _, message })) => {
+                println!("[Transfer] Transfer Error: {}", message);
+                let mut registry = transfers.write().await;
+                registry.insert(transfer_id.clone(), crate::TransferStatus::Failed);
+                return Err(format!("Transfer error: {}", message).into());
+            }
+            Ok(Ok(_)) => return Err("Unexpected message while waiting for file acceptance".into()),
+            Ok(Err(e)) => return Err(format!("Failed to receive file acceptance: {}", e).into()),
+            Err(_) => {
+                println!("[Transfer] Timeout waiting for receiver to accept");
+                let mut registry = transfers.write().await;
+                registry.insert(transfer_id.clone(), crate::TransferStatus::Cancelled);
+                return Err("Timeout waiting for receiver to accept file".into());
+            }
+        }
+
         // 2. Send Chunks
         let mut buffer = vec![0u8; chunk_size];
         let mut chunk_index = 0;

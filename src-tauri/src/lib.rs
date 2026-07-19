@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TransferStatus {
+    Pending,
     InProgress,
     Paused,
     Cancelled,
@@ -277,14 +278,35 @@ async fn request_pairing(
             .map_err(|e| e.to_string())?;
     }
 
-    // For now, just trust the device directly (simplified pairing)
-    let mut security = state.security.write().await;
-    security
-        .add_trusted(device_id.clone())
-        .map_err(|e| e.to_string())?;
-
-    println!("[Pairing] Device {} added to trusted devices", device_id);
     Ok(pairing_code)
+}
+
+#[tauri::command]
+async fn accept_file_offer(
+    state: tauri::State<'_, AppState>,
+    transfer_id: String,
+) -> Result<(), String> {
+    let mut transfers = state.transfers.write().await;
+    if transfers.contains_key(&transfer_id) {
+        transfers.insert(transfer_id, TransferStatus::InProgress);
+        Ok(())
+    } else {
+        Err("Transfer not found".to_string())
+    }
+}
+
+#[tauri::command]
+async fn reject_file_offer(
+    state: tauri::State<'_, AppState>,
+    transfer_id: String,
+) -> Result<(), String> {
+    let mut transfers = state.transfers.write().await;
+    if transfers.contains_key(&transfer_id) {
+        transfers.insert(transfer_id, TransferStatus::Cancelled);
+        Ok(())
+    } else {
+        Err("Transfer not found".to_string())
+    }
 }
 
 #[tauri::command]
@@ -345,10 +367,53 @@ async fn accept_pairing(
         .add_trusted(device_id.clone())
         .map_err(|e| e.to_string())?;
     println!("[Pairing] Device {} is now trusted", device_id);
+    let my_id = security.get_device_id().clone();
     drop(security);
+
+    // Send PairResponse to the device
+    let tm_opt = state.transfer.read().await.clone();
+    if let Some(tm) = tm_opt {
+        let _ = tm
+            .send_message(
+                ip.clone(),
+                port,
+                crate::transfer::protocol::MessageType::PairResponse {
+                    accepted: true,
+                    device_id: my_id,
+                },
+            )
+            .await;
+    }
 
     // Trigger history sync
     let _ = sync_history(state, device_id, ip, port).await;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn reject_pairing(
+    device_id: String,
+    ip: String,
+    port: u16,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    println!("[Pairing] Rejecting pairing for device: {}", device_id);
+
+    // Send PairResponse to the device
+    let tm_opt = state.transfer.read().await.clone();
+    if let Some(tm) = tm_opt {
+        let _ = tm
+            .send_message(
+                ip.clone(),
+                port,
+                crate::transfer::protocol::MessageType::PairResponse {
+                    accepted: false,
+                    device_id: "".to_string(), // They don't need our ID if rejected
+                },
+            )
+            .await;
+    }
 
     Ok(())
 }
@@ -519,6 +584,7 @@ pub fn run() {
                     transfers.clone(),
                     device_id.clone(),
                     device_name.clone(),
+                    security.clone(),
                 )?;
                 println!("Inside block_on: TransferManager initialized");
 
@@ -571,6 +637,7 @@ pub fn run() {
             get_local_network_interfaces,
             request_pairing,
             accept_pairing,
+            reject_pairing,
             set_sync_folder,
             get_sync_status,
             get_transfer_history,
@@ -579,7 +646,9 @@ pub fn run() {
             pause_transfer,
             resume_transfer,
             cancel_transfer,
-            sync_history
+            sync_history,
+            accept_file_offer,
+            reject_file_offer
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

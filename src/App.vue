@@ -9,6 +9,7 @@ import NetworkDiagnostics from "./components/NetworkDiagnostics.vue";
 import PairingDialog from "./components/PairingDialog.vue";
 import SyncSettings from "./components/SyncSettings.vue";
 import TransferHistory from "./components/TransferHistory.vue";
+import FileAcceptDialog from "./components/FileAcceptDialog.vue";
 import { useDevices, type Device } from "./composables/useDevices";
 
 const { devices, isDiscovering, refreshDevices } = useDevices();
@@ -23,6 +24,16 @@ const pairingRequest = ref<{
   port: number;
 } | null>(null);
 const senderPairingCode = ref<string | null>(null);
+
+const fileOffer = ref<{
+  isOpen: boolean;
+  transferId: string;
+  fileName: string;
+  fileSize: number;
+  senderId: string;
+  senderName: string;
+} | null>(null);
+
 const selectedDevice = computed(
   () => devices.value.find((d) => d.id === selectedId.value) || null
 );
@@ -107,6 +118,64 @@ onMounted(async () => {
       code: event.payload.code,
       ip: event.payload.ip,
       port: event.payload.port,
+    };
+  });
+
+  await listen("file-offer-received", (event: any) => {
+    fileOffer.value = {
+      isOpen: true,
+      transferId: event.payload.transferId,
+      fileName: event.payload.fileName,
+      fileSize: event.payload.fileSize,
+      senderId: event.payload.senderId,
+      senderName: event.payload.senderName || "Unknown Device",
+    };
+  });
+});
+
+const handleAcceptFile = async (transferId: string) => {
+  if (fileOffer.value) fileOffer.value.isOpen = false;
+  try {
+    await invoke("accept_file_offer", { transferId });
+  } catch (e) {
+    console.error("Failed to accept file:", e);
+  }
+};
+
+const handleRejectFile = async (transferId: string) => {
+  if (fileOffer.value) fileOffer.value.isOpen = false;
+  try {
+    await invoke("reject_file_offer", { transferId });
+  } catch (e) {
+    console.error("Failed to reject file:", e);
+  }
+};
+
+const activeTransfers = ref<{
+  [key: string]: {
+    fileName: string;
+    progress: number;
+    direction: string;
+    status: string;
+  };
+}>({});
+
+onMounted(async () => {
+  await listen("transfer-progress", (event: any) => {
+    const { transfer_id, file_name, bytes_sent, total_bytes, direction, status } = event.payload;
+    const progress = total_bytes > 0 ? (bytes_sent / total_bytes) * 100 : 0;
+    
+    if (status === 'completed' || status === 'cancelled' || status === 'failed') {
+      setTimeout(() => {
+        delete activeTransfers.value[transfer_id];
+      }, 3000); // Remove after 3s
+    }
+    
+    activeTransfers.value[transfer_id] = {
+      fileName: file_name,
+      progress,
+      direction,
+      status,
     };
   });
 });
@@ -226,6 +295,18 @@ onMounted(async () => {
       @confirm="handlePairConfirm"
     />
 
+    <FileAcceptDialog
+      v-if="fileOffer"
+      :is-open="fileOffer.isOpen"
+      :transfer-id="fileOffer.transferId"
+      :file-name="fileOffer.fileName"
+      :file-size="fileOffer.fileSize"
+      :sender-name="fileOffer.senderName"
+      @close="fileOffer.isOpen = false"
+      @accept="handleAcceptFile"
+      @reject="handleRejectFile"
+    />
+
     <!-- Sender Pairing Code Modal -->
     <Transition name="fade">
       <div
@@ -252,6 +333,32 @@ onMounted(async () => {
         </div>
       </div>
     </Transition>
+
+    <!-- Global Transfer Progress Overlay -->
+    <div class="global-transfers">
+      <TransitionGroup name="slide-up">
+        <div
+          v-for="(t, id) in activeTransfers"
+          :key="id"
+          class="global-transfer-item"
+        >
+          <div class="gt-info">
+            <span class="gt-icon">{{ t.direction === 'send' ? '📤' : '📥' }}</span>
+            <div class="gt-details">
+              <span class="gt-name">{{ t.fileName }}</span>
+              <span class="gt-status" :class="t.status">{{ t.status }}</span>
+            </div>
+          </div>
+          <div class="gt-progress-bar">
+            <div
+              class="gt-progress-fill"
+              :class="t.status"
+              :style="{ width: t.progress + '%' }"
+            ></div>
+          </div>
+        </div>
+      </TransitionGroup>
+    </div>
   </div>
 </template>
 
@@ -557,5 +664,84 @@ body {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+/* Global Transfers Notification */
+.global-transfers {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.global-transfer-item {
+  background: var(--sidebar-bg);
+  border: 1px solid var(--border-color);
+  padding: 12px 16px;
+  border-radius: 12px;
+  width: 300px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+  pointer-events: auto;
+  backdrop-filter: blur(8px);
+}
+
+.gt-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.gt-details {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.gt-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gt-status {
+  font-size: 0.75rem;
+  text-transform: capitalize;
+  color: var(--text-secondary);
+}
+
+.gt-status.completed { color: #10b981; }
+.gt-status.failed, .gt-status.cancelled { color: #ef4444; }
+
+.gt-progress-bar {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.gt-progress-fill {
+  height: 100%;
+  background: var(--accent-color);
+  transition: width 0.3s ease;
+}
+
+.gt-progress-fill.completed { background: #10b981; }
+.gt-progress-fill.failed, .gt-progress-fill.cancelled { background: #ef4444; }
+
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: all 0.3s ease;
+}
+.slide-up-enter-from,
+.slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(20px);
 }
 </style>

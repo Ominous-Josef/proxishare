@@ -63,14 +63,49 @@ impl FileReceiver {
                             transfer_id,
                             metadata,
                             sender_id,
-                            sender_name: _,
+                            sender_name,
                         } => {
+                            // 1. Verify Unauthenticated connection
+                            {
+                                let security = self.security.read().await;
+                                if !security.is_trusted(&sender_id) {
+                                    println!("[Receiver] Rejecting connection from untrusted sender: {}", sender_id);
+                                    let _ = Self::write_message(
+                                        &mut send_stream,
+                                        &MessageType::TransferError {
+                                            transfer_id: transfer_id.clone(),
+                                            message: "Device not trusted".to_string(),
+                                        },
+                                    ).await;
+                                    return Err("Untrusted device".into());
+                                }
+                            }
+
                             self.check_disk_space(metadata.size)?;
 
-                            let path = self.save_directory.join(&metadata.name);
+                            // 2. Fix Path Traversal
+                            let file_name = std::path::Path::new(&metadata.name)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("unnamed_file");
+
+                            let path = self.save_directory.join(file_name);
+                            
+                            // Abort if path escapes directory (double check)
+                            if !path.starts_with(&self.save_directory) {
+                                return Err("Path traversal detected".into());
+                            }
+
                             current_transfer_id = transfer_id.clone();
-                            current_file_name = metadata.name.clone();
+                            current_file_name = file_name.to_string();
                             current_file_size = metadata.size;
+
+                            // Update registry as Pending
+                            {
+                                let mut transfers = self.transfers.write().await;
+                                transfers.insert(current_transfer_id.clone(), crate::TransferStatus::Pending);
+                            }
+                            last_status = crate::TransferStatus::Pending;
 
                             // Record the transfer start in database
                             {
@@ -93,23 +128,17 @@ impl FileReceiver {
                                 }
                             }
 
-                            // Update registry
-                            {
-                                let mut transfers = self.transfers.write().await;
-                                transfers.insert(current_transfer_id.clone(), crate::TransferStatus::InProgress);
-                            }
-
-                            // Use std::fs to create and allocate to avoid tokio/fs2 complexity
-                            let std_file = std::fs::OpenOptions::new()
-                                .write(true)
-                                .create(true)
-                                .open(&path)?;
-
-                            use fs2::FileExt;
-                            let _ = std_file.allocate(metadata.size);
-
-                            // Then convert to tokio file
-                            file = Some(File::from_std(std_file));
+                            // Emit event to UI asking for acceptance
+                            let _ = self.app_handle.emit(
+                                "file-offer-received",
+                                serde_json::json!({
+                                    "transferId": current_transfer_id,
+                                    "fileName": current_file_name,
+                                    "fileSize": current_file_size,
+                                    "senderId": sender_id,
+                                    "senderName": sender_name,
+                                })
+                            );
                         }
                         MessageType::ChunkData {
                             transfer_id: _,
@@ -316,6 +345,13 @@ impl FileReceiver {
                                 }),
                             );
                         }
+                        MessageType::PairResponse { accepted, device_id } => {
+                            if accepted {
+                                let mut security = self.security.write().await;
+                                let _ = security.add_trusted(device_id.clone());
+                                println!("[Pairing] Device {} is now trusted", device_id);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -330,6 +366,37 @@ impl FileReceiver {
 
                         if status != last_status {
                             match status {
+                                crate::TransferStatus::InProgress if last_status == crate::TransferStatus::Pending => {
+                                    println!("[Receiver] User accepted file. Sending FileAccept...");
+                                    let _ = Self::write_message(
+                                        &mut send_stream,
+                                        &MessageType::FileAccept {
+                                            transfer_id: current_transfer_id.clone(),
+                                        },
+                                    ).await;
+
+                                    let path = self.save_directory.join(&current_file_name);
+                                    let std_file = std::fs::OpenOptions::new()
+                                        .write(true)
+                                        .create(true)
+                                        .open(&path)?;
+
+                                    use fs2::FileExt;
+                                    let _ = std_file.allocate(current_file_size);
+
+                                    file = Some(File::from_std(std_file));
+                                }
+                                crate::TransferStatus::Cancelled if last_status == crate::TransferStatus::Pending => {
+                                    println!("[Receiver] User declined file. Sending FileReject...");
+                                    let _ = Self::write_message(
+                                        &mut send_stream,
+                                        &MessageType::FileReject {
+                                            transfer_id: current_transfer_id.clone(),
+                                            reason: "User declined".to_string(),
+                                        },
+                                    ).await;
+                                    return Err("Transfer declined by receiver".into());
+                                }
                                 crate::TransferStatus::Cancelled => {
                                     println!("[Receiver] Sending TransferCancel to sender...");
                                     let _ = Self::write_message(

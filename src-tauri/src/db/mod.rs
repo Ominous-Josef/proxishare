@@ -65,8 +65,8 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT OR IGNORE INTO transfers (id, device_id, file_name, file_path, total_size, direction, status, bytes_transferred, file_hash, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'in_progress', 0, ?, ?, ?)
+            INSERT OR REPLACE INTO transfers (id, device_id, file_name, file_path, total_size, direction, status, bytes_transferred, file_hash, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT status FROM transfers WHERE id = ?), 'in_progress'), COALESCE((SELECT bytes_transferred FROM transfers WHERE id = ?), 0), ?, ?, ?)
             "#,
         )
         .bind(id)
@@ -75,6 +75,8 @@ impl Database {
         .bind(file_path)
         .bind(total_size)
         .bind(direction)
+        .bind(id)
+        .bind(id)
         .bind(file_hash)
         .bind(now)
         .bind(now)
