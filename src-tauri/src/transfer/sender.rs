@@ -310,15 +310,15 @@ impl FileSender {
                         for record in records {
                             // Update local database with synced records
                             let _ = db
-                                .record_transfer(
-                                    &record.id,
-                                    &record.device_id,
-                                    &record.file_name,
-                                    &record.file_path,
-                                    record.total_size,
-                                    &record.direction,
-                                    &record.file_hash,
-                                )
+                                .record_transfer(crate::db::TransferRecordArgs {
+                                    id: &record.id,
+                                    device_id: &record.device_id,
+                                    file_name: &record.file_name,
+                                    file_path: &record.file_path,
+                                    total_size: record.total_size,
+                                    direction: &record.direction,
+                                    file_hash: &record.file_hash,
+                                })
                                 .await
                                 .map_err(|e| println!("[Database] Record error: {:?}", e));
                             let _ = db

@@ -22,6 +22,16 @@ pub struct TransferRecord {
     pub updated_at: i64,
 }
 
+pub struct TransferRecordArgs<'a> {
+    pub id: &'a str,
+    pub device_id: &'a str,
+    pub file_name: &'a str,
+    pub file_path: &'a str,
+    pub total_size: i64,
+    pub direction: &'a str,
+    pub file_hash: &'a str,
+}
+
 pub struct Database {
     pool: Pool<Sqlite>,
 }
@@ -47,38 +57,31 @@ impl Database {
         Ok(Self { pool })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn record_transfer(
         &self,
-        id: &str,
-        device_id: &str,
-        file_name: &str,
-        file_path: &str,
-        total_size: i64,
-        direction: &str,
-        file_hash: &str,
+        args: TransferRecordArgs<'_>,
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().timestamp();
         println!(
             "[Database] Recording transfer: id={}, direction={}, file={}",
-            id, direction, file_name
+            args.id, args.direction, args.file_name
         );
 
         sqlx::query(
             r#"
             INSERT OR REPLACE INTO transfers (id, device_id, file_name, file_path, total_size, direction, status, bytes_transferred, file_hash, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT status FROM transfers WHERE id = ?), 'in_progress'), COALESCE((SELECT bytes_transferred FROM transfers WHERE id = ?), 0), ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT status FROM transfers WHERE id = ?), 'pending'), COALESCE((SELECT bytes_transferred FROM transfers WHERE id = ?), 0), ?, ?, ?)
             "#,
         )
-        .bind(id)
-        .bind(device_id)
-        .bind(file_name)
-        .bind(file_path)
-        .bind(total_size)
-        .bind(direction)
-        .bind(id)
-        .bind(id)
-        .bind(file_hash)
+        .bind(args.id)
+        .bind(args.device_id)
+        .bind(args.file_name)
+        .bind(args.file_path)
+        .bind(args.total_size)
+        .bind(args.direction)
+        .bind(args.id)
+        .bind(args.id)
+        .bind(args.file_hash)
         .bind(now)
         .bind(now)
         .execute(&self.pool)

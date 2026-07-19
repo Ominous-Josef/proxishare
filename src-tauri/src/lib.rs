@@ -96,15 +96,15 @@ async fn send_file(
         let db_lock = state.database.read().await;
         if let Some(db) = &*db_lock {
             if let Err(e) = db
-                .record_transfer(
-                    &transfer_id,
-                    &device_id,
-                    &file_name,
-                    &path,
-                    file_size,
-                    "send",
-                    "", // Hash will be calculated during transfer
-                )
+                .record_transfer(crate::db::TransferRecordArgs {
+                    id: &transfer_id,
+                    device_id: &device_id,
+                    file_name: &file_name,
+                    file_path: &path,
+                    total_size: file_size,
+                    direction: "send",
+                    file_hash: "", // Hash will be calculated during transfer
+                })
                 .await
             {
                 println!("[Database] Failed to record transfer: {:?}", e);

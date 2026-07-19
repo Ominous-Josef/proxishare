@@ -115,15 +115,15 @@ impl FileReceiver {
                                 let db_lock = self.database.read().await;
                                 if let Some(db) = &*db_lock {
                                     if let Err(e) = db
-                                        .record_transfer(
-                                            &current_transfer_id,
-                                            &sender_id,
-                                            &current_file_name,
-                                            &path.to_string_lossy(),
-                                            current_file_size as i64,
-                                            "receive",
-                                            &metadata.hash,
-                                        )
+                                        .record_transfer(crate::db::TransferRecordArgs {
+                                            id: &current_transfer_id,
+                                            device_id: &sender_id,
+                                            file_name: &current_file_name,
+                                            file_path: &path.to_string_lossy(),
+                                            total_size: current_file_size as i64,
+                                            direction: "receive",
+                                            file_hash: &metadata.hash,
+                                        })
                                         .await
                                     {
                                         println!("[Database] Failed to record transfer: {:?}", e);
@@ -311,15 +311,15 @@ impl FileReceiver {
                             if let Some(db) = &*db_lock {
                                 for record in records {
                                     let _ = db
-                                        .record_transfer(
-                                            &record.id,
-                                            &record.device_id,
-                                            &record.file_name,
-                                            &record.file_path,
-                                            record.total_size,
-                                            &record.direction,
-                                            &record.file_hash,
-                                        )
+                                        .record_transfer(crate::db::TransferRecordArgs {
+                                            id: &record.id,
+                                            device_id: &record.device_id,
+                                            file_name: &record.file_name,
+                                            file_path: &record.file_path,
+                                            total_size: record.total_size,
+                                            direction: &record.direction,
+                                            file_hash: &record.file_hash,
+                                        })
                                         .await;
                                     let _ = db
                                         .update_transfer_status(
