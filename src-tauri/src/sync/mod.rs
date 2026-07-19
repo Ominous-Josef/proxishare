@@ -10,6 +10,12 @@ pub struct SyncState {
     pub manager: Option<Arc<SyncManager>>,
 }
 
+impl Default for SyncState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SyncState {
     pub fn new() -> Self {
         Self {

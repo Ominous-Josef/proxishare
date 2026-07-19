@@ -255,15 +255,11 @@ impl DiscoveryService {
             Err(_) => return false,
         };
 
-        match tokio::time::timeout(
+        matches!(tokio::time::timeout(
             Duration::from_millis(500),
             tokio::net::TcpStream::connect(addr),
         )
-        .await
-        {
-            Ok(Ok(_)) => true,
-            _ => false,
-        }
+        .await, Ok(Ok(_)))
     }
 
     /// Find a reachable IP for a device from its list of addresses

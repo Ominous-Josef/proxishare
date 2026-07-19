@@ -11,10 +11,11 @@ pub struct TrustStore {
 pub struct SecurityService {
     store_path: PathBuf,
     pub trusted_devices: HashSet<String>,
+    my_id: String,
 }
 
 impl SecurityService {
-    pub fn new(app_dir: PathBuf) -> Self {
+    pub fn new(app_dir: PathBuf, my_id: String) -> Self {
         let store_path = app_dir.join("trust_store.json");
         let trusted_devices = if store_path.exists() {
             let content = fs::read_to_string(&store_path).unwrap_or_default();
@@ -26,7 +27,12 @@ impl SecurityService {
         Self {
             store_path,
             trusted_devices,
+            my_id,
         }
+    }
+
+    pub fn get_device_id(&self) -> &String {
+        &self.my_id
     }
 
     pub fn is_trusted(&self, device_id: &str) -> bool {

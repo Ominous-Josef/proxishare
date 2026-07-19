@@ -47,6 +47,7 @@ impl Database {
         Ok(Self { pool })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_transfer(
         &self,
         id: &str,

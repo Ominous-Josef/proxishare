@@ -236,7 +236,7 @@ fn get_local_network_interfaces() -> Vec<NetworkInterface> {
 #[tauri::command]
 async fn request_pairing(
     state: tauri::State<'_, AppState>,
-    device_id: String,
+    _device_id: String,
     ip: String,
     port: u16,
 ) -> Result<String, String> {
@@ -264,7 +264,7 @@ async fn request_pairing(
     // Send pairing request message
     let tm_opt = state.transfer.read().await.clone();
     if let Some(tm) = tm_opt {
-        let _ = tm
+        tm
             .send_message(
                 ip.clone(),
                 port,
@@ -287,8 +287,8 @@ async fn accept_file_offer(
     transfer_id: String,
 ) -> Result<(), String> {
     let mut transfers = state.transfers.write().await;
-    if transfers.contains_key(&transfer_id) {
-        transfers.insert(transfer_id, TransferStatus::InProgress);
+    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id) {
+        e.insert(TransferStatus::InProgress);
         Ok(())
     } else {
         Err("Transfer not found".to_string())
@@ -301,8 +301,8 @@ async fn reject_file_offer(
     transfer_id: String,
 ) -> Result<(), String> {
     let mut transfers = state.transfers.write().await;
-    if transfers.contains_key(&transfer_id) {
-        transfers.insert(transfer_id, TransferStatus::Cancelled);
+    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id) {
+        e.insert(TransferStatus::Cancelled);
         Ok(())
     } else {
         Err("Transfer not found".to_string())
@@ -315,8 +315,8 @@ async fn pause_transfer(
     transfer_id: String,
 ) -> Result<(), String> {
     let mut transfers = state.transfers.write().await;
-    if transfers.contains_key(&transfer_id) {
-        transfers.insert(transfer_id, TransferStatus::Paused);
+    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id) {
+        e.insert(TransferStatus::Paused);
         Ok(())
     } else {
         Err("Transfer not found".to_string())
@@ -329,8 +329,8 @@ async fn resume_transfer(
     transfer_id: String,
 ) -> Result<(), String> {
     let mut transfers = state.transfers.write().await;
-    if transfers.contains_key(&transfer_id) {
-        transfers.insert(transfer_id, TransferStatus::InProgress);
+    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id) {
+        e.insert(TransferStatus::InProgress);
         Ok(())
     } else {
         Err("Transfer not found".to_string())
@@ -343,8 +343,8 @@ async fn cancel_transfer(
     transfer_id: String,
 ) -> Result<(), String> {
     let mut transfers = state.transfers.write().await;
-    if transfers.contains_key(&transfer_id) {
-        transfers.insert(transfer_id, TransferStatus::Cancelled);
+    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id) {
+        e.insert(TransferStatus::Cancelled);
         Ok(())
     } else {
         Err("Transfer not found".to_string())
@@ -538,7 +538,18 @@ pub fn run() {
             if !app_data_dir.exists() {
                 let _ = std::fs::create_dir_all(&app_data_dir);
             }
-            let security = SecurityService::new(app_data_dir.clone());
+
+            let device_id_path = app_data_dir.join("device_id.txt");
+            let device_id = if device_id_path.exists() {
+                std::fs::read_to_string(&device_id_path)
+                    .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
+            } else {
+                let id = uuid::Uuid::new_v4().to_string();
+                let _ = std::fs::write(&device_id_path, &id);
+                id
+            };
+
+            let security = Arc::new(RwLock::new(SecurityService::new(app_data_dir.clone(), device_id.clone())));
 
             // Initialize Database
             let db_path = app_data_dir.join("proxishare.db");
@@ -557,16 +568,6 @@ pub fn run() {
             let database = Arc::new(RwLock::new(database_opt));
 
             // Initialize Device ID and Name
-            let device_id_path = app_data_dir.join("device_id.txt");
-            let device_id = if device_id_path.exists() {
-                std::fs::read_to_string(&device_id_path)
-                    .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
-            } else {
-                let id = uuid::Uuid::new_v4().to_string();
-                let _ = std::fs::write(&device_id_path, &id);
-                id
-            };
-
             let device_name = hostname::get()
                 .ok()
                 .and_then(|h| h.into_string().ok())
@@ -614,7 +615,7 @@ pub fn run() {
                 discovery: Arc::new(RwLock::new(Some(discovery))),
                 transfer: Arc::new(RwLock::new(Some(transfer_manager))),
                 sync: Arc::new(RwLock::new(SyncState::new())),
-                security: Arc::new(RwLock::new(security)),
+                security,
                 database: database.clone(),
                 transfers,
             };

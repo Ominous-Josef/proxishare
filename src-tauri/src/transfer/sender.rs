@@ -12,7 +12,7 @@ const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
 /// Minimum chunk size (64KB) - used for small files or slow connections
 const MIN_CHUNK_SIZE: usize = 64 * 1024;
 /// Default chunk size (1MB) - balanced for most scenarios
-const DEFAULT_CHUNK_SIZE: usize = 1 * 1024 * 1024;
+const DEFAULT_CHUNK_SIZE: usize = 1024 * 1024;
 
 #[derive(Clone, Serialize)]
 pub struct TransferProgress {

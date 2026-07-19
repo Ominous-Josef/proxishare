@@ -14,6 +14,7 @@ pub struct FileReceiver {
     app_handle: tauri::AppHandle,
     database: Arc<tokio::sync::RwLock<Option<crate::db::Database>>>,
     transfers: crate::TransferRegistry,
+    security: Arc<tokio::sync::RwLock<crate::crypto::security::SecurityService>>,
 }
 
 impl FileReceiver {
@@ -23,6 +24,7 @@ impl FileReceiver {
         app_handle: tauri::AppHandle,
         database: Arc<tokio::sync::RwLock<Option<crate::db::Database>>>,
         transfers: crate::TransferRegistry,
+        security: Arc<tokio::sync::RwLock<crate::crypto::security::SecurityService>>,
     ) -> Self {
         Self {
             save_directory,
@@ -30,6 +32,7 @@ impl FileReceiver {
             app_handle,
             database,
             transfers,
+            security,
         }
     }
 
@@ -345,13 +348,12 @@ impl FileReceiver {
                                 }),
                             );
                         }
-                        MessageType::PairResponse { accepted, device_id } => {
-                            if accepted {
+                        MessageType::PairResponse { accepted, device_id }
+                            if accepted => {
                                 let mut security = self.security.write().await;
                                 let _ = security.add_trusted(device_id.clone());
                                 println!("[Pairing] Device {} is now trusted", device_id);
                             }
-                        }
                         _ => {}
                     }
                 }
@@ -379,6 +381,7 @@ impl FileReceiver {
                                     let std_file = std::fs::OpenOptions::new()
                                         .write(true)
                                         .create(true)
+                                        .truncate(true)
                                         .open(&path)?;
 
                                     use fs2::FileExt;
