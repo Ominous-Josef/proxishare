@@ -203,11 +203,8 @@ impl FileSender {
 
         loop {
             // Check for background task messages (e.g. cancellation)
-            if let Ok(msg) = rx.try_recv() {
-                if let SenderTaskMessage::Error(e) = msg {
-                    return Err(e);
-                }
-                // We ignore Ack/HistorySync here, we'll get them at the end if they arrive early.
+            if let Ok(SenderTaskMessage::Error(e)) = rx.try_recv() {
+                return Err(e);
             }
             // Check status for pause/cancel
             {
@@ -363,7 +360,6 @@ impl FileSender {
                         "[Transfer] Received HistorySync ({} records) during completion",
                         records.len()
                     );
-                    use tauri::Manager;
                     let app_state = self.app_handle.state::<crate::AppState>();
                     let db_lock = app_state.database.read().await;
                     if let Some(db) = &*db_lock {
