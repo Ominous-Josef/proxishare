@@ -56,6 +56,8 @@ impl FileReceiver {
         let mut current_file_size: u64 = 0;
         let mut last_status = crate::TransferStatus::InProgress;
 
+        let mut status_ticker = tokio::time::interval(std::time::Duration::from_millis(500));
+
         loop {
             tokio::select! {
                 // 1. Listen for network messages
@@ -362,7 +364,7 @@ impl FileReceiver {
                 }
 
                 // 2. Poll local status changes every 500ms
-                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                _ = status_ticker.tick() => {
                     if !current_transfer_id.is_empty() {
                         let status = {
                             let registry = self.transfers.read().await;
@@ -370,6 +372,22 @@ impl FileReceiver {
                         };
 
                         if status != last_status {
+                            // Sync status to database
+                            {
+                                let db_lock = self.database.read().await;
+                                if let Some(db) = &*db_lock {
+                                    let status_str = match status {
+                                        crate::TransferStatus::Pending => "pending",
+                                        crate::TransferStatus::InProgress => "in_progress",
+                                        crate::TransferStatus::Paused => "paused",
+                                        crate::TransferStatus::Cancelled => "cancelled",
+                                        crate::TransferStatus::Completed => "completed",
+                                        crate::TransferStatus::Failed => "failed",
+                                    };
+                                    let _ = db.update_transfer_status(&current_transfer_id, status_str, bytes_received as i64).await;
+                                }
+                            }
+
                             match status {
                                 crate::TransferStatus::InProgress if last_status == crate::TransferStatus::Pending => {
                                     println!("[Receiver] User accepted file. Sending FileAccept...");

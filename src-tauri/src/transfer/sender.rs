@@ -162,6 +162,7 @@ impl FileSender {
 
                 // Notify receiver if status changed
                 if status != last_status {
+                    // Sync status to database locally if we have access (wait, sender doesn't have DB here)
                     match status {
                         crate::TransferStatus::Cancelled => {
                             println!("[Transfer] Sending TransferCancel to receiver...");

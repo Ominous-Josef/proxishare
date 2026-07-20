@@ -129,6 +129,24 @@ impl Database {
         Ok(())
     }
 
+    pub async fn update_status_only(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            "UPDATE transfers SET status = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(status)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn get_transfer_history(
         &self,
         limit: i32,

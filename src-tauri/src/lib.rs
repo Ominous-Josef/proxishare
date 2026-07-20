@@ -150,9 +150,14 @@ async fn send_file(
                 Ok(())
             }
             Err(e) => {
-                let error_msg = format!("Failed to send file: {}", e);
-                println!("[Command] {}", error_msg);
-                Err(error_msg)
+                if e.contains("cancelled") {
+                    println!("[Command] Transfer cancelled by user, suppressing error");
+                    Ok(())
+                } else {
+                    let error_msg = format!("Failed to send file: {}", e);
+                    println!("[Command] {}", error_msg);
+                    Err(error_msg)
+                }
             }
         }
     } else {
@@ -315,8 +320,13 @@ async fn pause_transfer(
     transfer_id: String,
 ) -> Result<(), String> {
     let mut transfers = state.transfers.write().await;
-    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id) {
+    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id.clone()) {
         e.insert(TransferStatus::Paused);
+        // Sync to DB
+        let db_lock = state.database.read().await;
+        if let Some(db) = &*db_lock {
+            let _ = db.update_status_only(&transfer_id, "paused").await;
+        }
         Ok(())
     } else {
         Err("Transfer not found".to_string())
@@ -329,8 +339,13 @@ async fn resume_transfer(
     transfer_id: String,
 ) -> Result<(), String> {
     let mut transfers = state.transfers.write().await;
-    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id) {
+    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id.clone()) {
         e.insert(TransferStatus::InProgress);
+        // Sync to DB
+        let db_lock = state.database.read().await;
+        if let Some(db) = &*db_lock {
+            let _ = db.update_status_only(&transfer_id, "in_progress").await;
+        }
         Ok(())
     } else {
         Err("Transfer not found".to_string())
@@ -343,8 +358,13 @@ async fn cancel_transfer(
     transfer_id: String,
 ) -> Result<(), String> {
     let mut transfers = state.transfers.write().await;
-    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id) {
+    if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id.clone()) {
         e.insert(TransferStatus::Cancelled);
+        // Sync to DB
+        let db_lock = state.database.read().await;
+        if let Some(db) = &*db_lock {
+            let _ = db.update_status_only(&transfer_id, "cancelled").await;
+        }
         Ok(())
     } else {
         Err("Transfer not found".to_string())
