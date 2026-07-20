@@ -110,6 +110,19 @@ impl FileSender {
         };
         Self::write_message(&mut send_stream, &offer).await?;
 
+        // Emit initial progress so UI knows we're waiting
+        let _ = self.app_handle.emit(
+            "transfer-progress",
+            TransferProgress {
+                transfer_id: transfer_id.clone(),
+                file_name: file_name.clone(),
+                bytes_sent: 0,
+                total_bytes: file_size,
+                direction: "send".to_string(),
+                status: "pending".to_string(),
+            },
+        );
+
         // Wait for FileAccept or FileReject
         println!("[Transfer] Waiting for receiver to accept file...");
         let acceptance_timeout = std::time::Duration::from_secs(300); // 5 minutes
@@ -119,15 +132,33 @@ impl FileSender {
         ).await {
             Ok(Ok(MessageType::FileAccept { transfer_id: ack_id })) if ack_id == transfer_id => {
                 println!("[Transfer] Receiver accepted the file. Starting chunks...");
+                let mut registry = transfers.write().await;
+                registry.insert(transfer_id.clone(), crate::TransferStatus::InProgress);
             }
             Ok(Ok(MessageType::FileReject { transfer_id: _, reason })) => {
                 println!("[Transfer] Receiver rejected the file: {}", reason);
+                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    file_name: file_name.clone(),
+                    bytes_sent: 0,
+                    total_bytes: file_size,
+                    direction: "send".to_string(),
+                    status: "cancelled".to_string(),
+                });
                 let mut registry = transfers.write().await;
                 registry.insert(transfer_id.clone(), crate::TransferStatus::Cancelled);
                 return Err(format!("Transfer rejected: {}", reason).into());
             }
             Ok(Ok(MessageType::TransferError { transfer_id: _, message })) => {
                 println!("[Transfer] Transfer Error: {}", message);
+                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    file_name: file_name.clone(),
+                    bytes_sent: 0,
+                    total_bytes: file_size,
+                    direction: "send".to_string(),
+                    status: "failed".to_string(),
+                });
                 let mut registry = transfers.write().await;
                 registry.insert(transfer_id.clone(), crate::TransferStatus::Failed);
                 return Err(format!("Transfer error: {}", message).into());
@@ -136,6 +167,14 @@ impl FileSender {
             Ok(Err(e)) => return Err(format!("Failed to receive file acceptance: {}", e).into()),
             Err(_) => {
                 println!("[Transfer] Timeout waiting for receiver to accept");
+                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    file_name: file_name.clone(),
+                    bytes_sent: 0,
+                    total_bytes: file_size,
+                    direction: "send".to_string(),
+                    status: "cancelled".to_string(),
+                });
                 let mut registry = transfers.write().await;
                 registry.insert(transfer_id.clone(), crate::TransferStatus::Cancelled);
                 return Err("Timeout waiting for receiver to accept file".into());
@@ -204,6 +243,14 @@ impl FileSender {
         loop {
             // Check for background task messages (e.g. cancellation)
             if let Ok(SenderTaskMessage::Error(e)) = rx.try_recv() {
+                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    file_name: file_name.clone(),
+                    bytes_sent: total_sent,
+                    total_bytes: file_size,
+                    direction: "send".to_string(),
+                    status: "failed".to_string(),
+                });
                 return Err(e);
             }
             // Check status for pause/cancel
@@ -218,6 +265,23 @@ impl FileSender {
 
                 // Notify receiver if status changed
                 if status != last_status {
+                    // Emit progress update so UI sees the change instantly
+                    let _ = self.app_handle.emit(
+                        "transfer-progress",
+                        TransferProgress {
+                            transfer_id: transfer_id.clone(),
+                            file_name: file_name.clone(),
+                            bytes_sent: total_sent,
+                            total_bytes: file_size,
+                            direction: "send".to_string(),
+                            status: match status {
+                                crate::TransferStatus::Paused => "paused",
+                                crate::TransferStatus::Cancelled => "cancelled",
+                                _ => "in_progress",
+                            }.to_string(),
+                        },
+                    );
+
                     // Sync status to database locally if we have access (wait, sender doesn't have DB here)
                     match status {
                         crate::TransferStatus::Cancelled => {
@@ -281,6 +345,18 @@ impl FileSender {
 
                     if status == crate::TransferStatus::InProgress {
                         println!("[Transfer] Resuming, sending TransferResume...");
+                        // Emit progress update for resume
+                        let _ = self.app_handle.emit(
+                            "transfer-progress",
+                            TransferProgress {
+                                transfer_id: transfer_id.clone(),
+                                file_name: file_name.clone(),
+                                bytes_sent: total_sent,
+                                total_bytes: file_size,
+                                direction: "send".to_string(),
+                                status: "in_progress".to_string(),
+                            },
+                        );
                         let _ = Self::write_message(
                             &mut send_stream,
                             &MessageType::TransferResume {
@@ -393,6 +469,14 @@ impl FileSender {
                 Ok(None) => return Err("Receiver disconnected before acknowledging completion".into()),
                 Err(_) => {
                     println!("[Transfer] Timeout waiting for transfer completion ACK");
+                    let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                        transfer_id: transfer_id.clone(),
+                        file_name: file_name.clone(),
+                        bytes_sent: file_size,
+                        total_bytes: file_size,
+                        direction: "send".to_string(),
+                        status: "failed".to_string(),
+                    });
                     return Err("Timeout waiting for transfer completion ACK".into());
                 }
             }

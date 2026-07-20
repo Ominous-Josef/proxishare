@@ -78,8 +78,8 @@ export function useFileTransfer() {
         activeTransfers.value.set(progress.transfer_id, transfer);
         transfers.value = Array.from(activeTransfers.value.values());
 
-        // Remove completed transfers after a delay
-        if (percent >= 100) {
+        // Remove completed or failed transfers after a delay
+        if (percent >= 100 || progress.status === "cancelled" || progress.status === "failed") {
           setTimeout(() => {
             activeTransfers.value.delete(progress.transfer_id);
             transfers.value = Array.from(activeTransfers.value.values());

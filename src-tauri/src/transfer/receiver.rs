@@ -62,7 +62,31 @@ impl FileReceiver {
             tokio::select! {
                 // 1. Listen for network messages
                 msg_result = Self::read_message(&mut recv_stream) => {
-                    let msg = msg_result?;
+                    let msg = match msg_result {
+                        Ok(m) => m,
+                        Err(e) => {
+                            println!("[Receiver] Error reading from stream: {:?}", e);
+                            if !current_transfer_id.is_empty() {
+                                let mut transfers = self.transfers.write().await;
+                                transfers.insert(current_transfer_id.clone(), crate::TransferStatus::Failed);
+
+                                let db_lock = self.database.read().await;
+                                if let Some(db) = &*db_lock {
+                                    let _ = db.update_transfer_status(&current_transfer_id, "failed", bytes_received as i64).await;
+                                }
+
+                                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                                    transfer_id: current_transfer_id.clone(),
+                                    file_name: current_file_name.clone(),
+                                    bytes_sent: bytes_received,
+                                    total_bytes: current_file_size,
+                                    direction: "receive".to_string(),
+                                    status: "failed".to_string(),
+                                });
+                            }
+                            return Err(e);
+                        }
+                    };
                     match msg {
                         MessageType::FileOffer {
                             transfer_id,
@@ -173,7 +197,11 @@ impl FileReceiver {
                                         bytes_sent: bytes_received,
                                         total_bytes: current_file_size,
                                         direction: "receive".to_string(),
-                                        status: "in_progress".to_string(),
+                                        status: match last_status {
+                                            crate::TransferStatus::Paused => "paused",
+                                            crate::TransferStatus::Cancelled => "cancelled",
+                                            _ => "in_progress",
+                                        }.to_string(),
                                     },
                                 );
                             }
@@ -214,7 +242,11 @@ impl FileReceiver {
                                     bytes_sent: bytes_received,
                                     total_bytes: current_file_size,
                                     direction: "receive".to_string(),
-                                    status: "in_progress".to_string(),
+                                    status: match last_status {
+                                        crate::TransferStatus::Paused => "paused",
+                                        crate::TransferStatus::Cancelled => "cancelled",
+                                        _ => "in_progress",
+                                    }.to_string(),
                                 },
                             );
                         }

@@ -88,7 +88,7 @@ async fn send_file(
     // Track transfer in registry
     {
         let mut transfers = state.transfers.write().await;
-        transfers.insert(transfer_id.clone(), TransferStatus::InProgress);
+        transfers.insert(transfer_id.clone(), TransferStatus::Pending);
     }
 
     // Record the transfer start in database
