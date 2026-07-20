@@ -157,8 +157,25 @@ const activeTransfers = ref<{
     progress: number;
     direction: string;
     status: string;
+    speedBps: number;
+    timeRemainingSec: number;
+    lastBytesSent: number;
+    lastUpdateTime: number;
   };
 }>({});
+
+const formatSpeed = (bps: number) => {
+  if (bps === 0) return "-- MB/s";
+  return (bps / (1024 * 1024)).toFixed(1) + " MB/s";
+};
+
+const formatTime = (secs: number) => {
+  if (!isFinite(secs) || secs <= 0) return "--";
+  if (secs < 60) return Math.ceil(secs) + "s";
+  const m = Math.floor(secs / 60);
+  const s = Math.ceil(secs % 60);
+  return `${m}m ${s}s`;
+};
 
 onMounted(async () => {
   await listen("transfer-progress", (event: any) => {
@@ -171,11 +188,37 @@ onMounted(async () => {
       }, 3000); // Remove after 3s
     }
     
+    const now = Date.now();
+    const existing = activeTransfers.value[transfer_id];
+    let speedBps = 0;
+    let timeRemainingSec = 0;
+
+    if (existing && existing.lastUpdateTime > 0 && status === 'in_progress') {
+      const timeDiff = (now - existing.lastUpdateTime) / 1000;
+      const bytesDiff = bytes_sent - existing.lastBytesSent;
+      
+      if (timeDiff > 0 && bytesDiff >= 0) {
+        const currentSpeed = bytesDiff / timeDiff;
+        // EWMA for smoother speed
+        speedBps = existing.speedBps > 0 ? (existing.speedBps * 0.7) + (currentSpeed * 0.3) : currentSpeed;
+      } else {
+        speedBps = existing.speedBps;
+      }
+    }
+
+    if (speedBps > 0 && total_bytes > bytes_sent) {
+      timeRemainingSec = (total_bytes - bytes_sent) / speedBps;
+    }
+    
     activeTransfers.value[transfer_id] = {
       fileName: file_name,
       progress,
       direction,
       status,
+      speedBps,
+      timeRemainingSec,
+      lastBytesSent: bytes_sent,
+      lastUpdateTime: now,
     };
   });
 });
@@ -346,7 +389,12 @@ onMounted(async () => {
             <span class="gt-icon">{{ t.direction === 'send' ? '📤' : '📥' }}</span>
             <div class="gt-details">
               <span class="gt-name">{{ t.fileName }}</span>
-              <span class="gt-status" :class="t.status">{{ t.status }}</span>
+              <span class="gt-status" :class="t.status">
+                {{ t.status }}
+                <span v-if="t.status === 'in_progress' && t.speedBps > 0">
+                  • {{ formatSpeed(t.speedBps) }} • {{ formatTime(t.timeRemainingSec) }} left
+                </span>
+              </span>
             </div>
           </div>
           <div class="gt-progress-bar">

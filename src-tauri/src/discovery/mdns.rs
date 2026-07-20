@@ -218,20 +218,52 @@ impl DiscoveryService {
 
                 // Clean up stale devices
                 let now = Utc::now().timestamp();
-                let mut devices = cleanup_devices.write().await;
-                let _before_count = devices.len();
-                devices.retain(|id, device| {
-                    let keep = now - device.last_seen < DEVICE_TIMEOUT_SECS;
-                    if !keep {
-                        println!(
-                            "[mDNS] Removing stale device: {} (last seen {}s ago)",
-                            id,
-                            now - device.last_seen
-                        );
+                
+                // 1. Identify potentially stale devices
+                let devices_lock = cleanup_devices.write().await;
+                let mut potentially_stale = Vec::new();
+                for (id, device) in devices_lock.iter() {
+                    if now - device.last_seen >= DEVICE_TIMEOUT_SECS {
+                        potentially_stale.push((id.clone(), device.ip.clone(), device.port));
                     }
-                    keep
-                });
-                drop(devices);
+                }
+                drop(devices_lock);
+
+                // 2. Ping them asynchronously
+                let mut confirmed_stale = Vec::new();
+                for (id, ip, port) in potentially_stale {
+                    use std::net::SocketAddr;
+                    let addr: Result<SocketAddr, _> = format!("{}:{}", ip, port).parse();
+                    let is_alive = match addr {
+                        Ok(a) => {
+                            matches!(tokio::time::timeout(
+                                Duration::from_millis(500),
+                                tokio::net::TcpStream::connect(a)
+                            ).await, Ok(Ok(_)))
+                        }
+                        Err(_) => false,
+                    };
+                    
+                    if is_alive {
+                        // It's alive! Update last_seen
+                        println!("[mDNS] Device {} is still reachable via TCP, updating last_seen", id);
+                        let mut devices_lock = cleanup_devices.write().await;
+                        if let Some(device) = devices_lock.get_mut(&id) {
+                            device.last_seen = Utc::now().timestamp();
+                        }
+                    } else {
+                        confirmed_stale.push(id);
+                    }
+                }
+
+                // 3. Remove confirmed stale devices
+                if !confirmed_stale.is_empty() {
+                    let mut devices_lock = cleanup_devices.write().await;
+                    for id in confirmed_stale {
+                        println!("[mDNS] Removing stale device: {}", id);
+                        devices_lock.remove(&id);
+                    }
+                }
 
                 // Re-query every REQUERY_INTERVAL_SECS to refresh device list
                 requery_counter += 10;

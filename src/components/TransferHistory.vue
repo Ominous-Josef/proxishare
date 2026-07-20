@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { listen } from "@tauri-apps/api/event";
-import { ClockIcon, FileIcon, RefreshCwIcon } from "lucide-vue-next";
+import { 
+  ClockIcon, 
+  FileIcon, 
+  RefreshCwIcon, 
+  CheckCircleIcon, 
+  XCircleIcon, 
+  AlertTriangleIcon, 
+  PauseCircleIcon, 
+  CircleIcon 
+} from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
   TransferRecord,
@@ -104,17 +113,17 @@ const getStatusClass = (status: string) => {
 const getStatusIcon = (status: string) => {
   switch (status) {
     case "completed":
-      return "✓";
+      return CheckCircleIcon;
     case "failed":
-      return "✗";
+      return XCircleIcon;
     case "cancelled":
-      return "⚠";
+      return AlertTriangleIcon;
     case "in_progress":
-      return "↻";
+      return RefreshCwIcon;
     case "paused":
-      return "‖";
+      return PauseCircleIcon;
     default:
-      return "○";
+      return CircleIcon;
   }
 };
 
@@ -248,7 +257,11 @@ const handleClearHistory = async () => {
         </div>
 
         <div class="item-status" :class="getStatusClass(record.status)">
-          <span class="status-icon">{{ getStatusIcon(record.status) }}</span>
+          <component 
+            :is="getStatusIcon(record.status)" 
+            :size="16" 
+            :class="{ spinning: record.status === 'in_progress' }" 
+          />
         </div>
       </div>
     </div>
