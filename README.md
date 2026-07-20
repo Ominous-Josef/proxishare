@@ -1,23 +1,31 @@
 # ProxiShare
 
-**ProxiShare** is a high-performance, secure, local peer-to-peer file sharing and synchronization application. It allows you to share files between devices on the same network without relying on cloud services.
+**ProxiShare** is a high-performance, secure, local peer-to-peer file sharing and synchronization application. It allows you to share massive files between devices on the same network instantly, completely bypassing the cloud.
 
 ## 🚀 Features
 
 - **Instant Discovery:** Automatically find devices on your local network using mDNS (zero-configuration).
-- **Blazing Fast Transfers:** Built on **QUIC (via Quinn)** for reliable, high-speed encrypted file transfers.
-- **Secure Pairing:** Interactive handshake process to establish trust between devices.
-- **Transfer History:** Dedicated tab to keep track of all sent and received files.
-- **File Sync (Phase 4):** Integrated folder watcher to monitor changes and synchronize shared directories (Foundation implemented).
-- **Cross-Platform:** Built with Tauri for a lightweight desktop experience on Windows, macOS, and Linux.
+- **Blazing Fast Transfers:** Built on **QUIC (via Quinn)** for reliable, multiplexed, and lightning-fast raw file streaming that is highly resilient to local network drops.
+- **Interactive File Acceptance:** Receive elegant UI prompts allowing you to `[Accept]` or `[Decline]` incoming files before disk space is allocated.
+- **Secure Pairing:** A robust, interactive handshake process establishes mutual trust between devices before any transfers occur.
+- **Transfer History:** A dedicated tab powered by an asynchronous SQLite database keeps track of all active, paused, completed, and failed transfers in real-time.
+- **File Syncing Ready:** Integrated `notify` folder watcher foundation to monitor changes and synchronize shared directories instantly without CPU polling.
+- **Cross-Platform:** Built with Tauri 2.0 for a lightweight desktop experience on Windows, macOS, and Linux.
 
-## 🛠️ Tech Stack
+## 🛠️ Tech Stack & Architecture
 
 - **Frontend:** Vue.js 3, TypeScript, Vite
-- **Backend:** Rust
-- **Networking:** Quinn (QUIC Protocol), mdns-sd (Discovery)
-- **Database:** SQLite (via SQLx)
-- **File Watching:** notify
+- **Backend:** Rust, Tauri 2.0
+- **Networking (`quinn`):** Utilizes the QUIC protocol over UDP instead of TCP/WebSockets for superior performance, multiplexing, and built-in TLS 1.3 encryption.
+- **File Hashing (`blake3`):** Uses the `blake3` cryptographic hash algorithm, which utilizes SIMD and parallel processing to scan multi-gigabyte files at RAM speeds while remaining cryptographically secure against collisions (unlike `xxhash`).
+- **Database (`sqlx` + SQLite):** Employs an asynchronous, compile-time verified SQLite engine to manage sync state and history without blocking file transfer threads.
+- **Monitoring (`notify`):** Hooks directly into OS-level APIs (inotify/FSEvents/ReadDirectoryChangesW) for zero-overhead, real-time filesystem monitoring.
+
+## 🔒 Security Enhancements
+
+- **End-to-End Encryption:** All local network transfers are encrypted using QUIC's built-in TLS.
+- **Strict Trust Verification:** Devices must complete an explicit pairing handshake before transferring files. Unauthenticated connection attempts are immediately dropped.
+- **Path Traversal Protection:** The backend strictly parses incoming metadata to ensure malicious peers cannot write to unintended system directories (e.g., `../../etc/passwd`).
 
 ## 📦 Getting Started
 
@@ -25,7 +33,7 @@
 
 - [Rust](https://www.rust-lang.org/tools/install)
 - [Node.js](https://nodejs.org/)
-- [Tauri CLI](https://tauri.app/v1/guides/getting-started/prerequisites)
+- Tauri CLI dependencies
 
 ### Run in Development
 
@@ -43,10 +51,6 @@ npm run tauri dev
 npm run tauri build
 ```
 
-## 🔒 Security
-
-All transfers are encrypted using QUIC's built-in TLS. Devices must be explicitly "paired" before they can exchange sensitive information, ensuring your files stay safe and only go where you want them to.
-
 ## Download
 
 Get the latest version here:
@@ -56,9 +60,9 @@ https://github.com/Ominous-Josef/proxishare/releases/latest
 ## Platforms
 
 - Windows (.msi / .exe)
-- macOS (.dmg)
+- macOS (.dmg / .app)
 - Linux (.AppImage / .deb / .rpm)
 
 ---
 
-Built &amp; Developed by [Ohwonohwo Joseph](https://github.com/Ominous-Josef).
+Built & Developed by [Ohwonohwo Joseph](https://github.com/Ominous-Josef).
