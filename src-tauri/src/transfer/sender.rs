@@ -149,7 +149,66 @@ impl FileSender {
 
         let mut last_status = crate::TransferStatus::InProgress;
 
+        enum SenderTaskMessage {
+            AckReceived,
+            HistorySync(Vec<crate::db::TransferRecord>),
+            Error(crate::GenericError),
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<SenderTaskMessage>(10);
+        let transfer_id_clone = transfer_id.clone();
+        let transfers_clone = transfers.clone();
+        
+        let mut recv_stream = recv_stream;
+
+        tokio::spawn(async move {
+            loop {
+                match Self::read_message(&mut recv_stream).await {
+                    Ok(msg) => {
+                        match msg {
+                            MessageType::TransferPause { .. } => {
+                                println!("[Sender] Receiver paused the transfer");
+                                let mut registry = transfers_clone.write().await;
+                                registry.insert(transfer_id_clone.clone(), crate::TransferStatus::Paused);
+                            }
+                            MessageType::TransferResume { .. } => {
+                                println!("[Sender] Receiver resumed the transfer");
+                                let mut registry = transfers_clone.write().await;
+                                registry.insert(transfer_id_clone.clone(), crate::TransferStatus::InProgress);
+                            }
+                            MessageType::TransferCancel { .. } => {
+                                println!("[Sender] Receiver cancelled the transfer");
+                                let mut registry = transfers_clone.write().await;
+                                registry.insert(transfer_id_clone.clone(), crate::TransferStatus::Cancelled);
+                                let _ = tx.send(SenderTaskMessage::Error("Transfer cancelled by receiver".into())).await;
+                                break;
+                            }
+                            MessageType::TransferCompleteAck { .. } => {
+                                let _ = tx.send(SenderTaskMessage::AckReceived).await;
+                                break;
+                            }
+                            MessageType::HistorySync { records } => {
+                                let _ = tx.send(SenderTaskMessage::HistorySync(records)).await;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(SenderTaskMessage::Error(e)).await;
+                        break;
+                    }
+                }
+            }
+        });
+
         loop {
+            // Check for background task messages (e.g. cancellation)
+            if let Ok(msg) = rx.try_recv() {
+                if let SenderTaskMessage::Error(e) = msg {
+                    return Err(e);
+                }
+                // We ignore Ack/HistorySync here, we'll get them at the end if they arrive early.
+            }
             // Check status for pause/cancel
             {
                 let mut status = {
@@ -287,25 +346,24 @@ impl FileSender {
         // 4. Signal that we're done sending data (but keep stream open for reading ACK)
         send_stream.finish()?;
 
-        // 5. Wait for acknowledgment or history sync from receiver
+        // 5. Wait for acknowledgment or history sync from receiver task
         let mut completion_received = false;
         while !completion_received {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(30),
-                Self::read_message(&mut recv_stream),
+                rx.recv(),
             )
             .await
             {
-                Ok(Ok(MessageType::TransferCompleteAck {
-                    transfer_id: ack_id,
-                })) if ack_id == transfer_id => {
+                Ok(Some(SenderTaskMessage::AckReceived)) => {
                     completion_received = true;
                 }
-                Ok(Ok(MessageType::HistorySync { records })) => {
+                Ok(Some(SenderTaskMessage::HistorySync(records))) => {
                     println!(
                         "[Transfer] Received HistorySync ({} records) during completion",
                         records.len()
                     );
+                    use tauri::Manager;
                     let app_state = self.app_handle.state::<crate::AppState>();
                     let db_lock = app_state.database.read().await;
                     if let Some(db) = &*db_lock {
@@ -321,27 +379,25 @@ impl FileSender {
                                     direction: &record.direction,
                                     file_hash: &record.file_hash,
                                 })
-                                .await
-                                .map_err(|e| println!("[Database] Record error: {:?}", e));
+                                .await;
                             let _ = db
                                 .update_transfer_status(
                                     &record.id,
                                     &record.status,
                                     record.bytes_transferred,
                                 )
-                                .await
-                                .map_err(|e| println!("[Database] Status error: {:?}", e));
+                                .await;
                         }
                     }
-                    // Notify frontend that history changed
                     let _ = self.app_handle.emit("history-updated", ());
                 }
-                Ok(Ok(_)) => {
-                    return Err("Unexpected message while waiting for completion ack".into())
+                Ok(Some(SenderTaskMessage::Error(e))) => {
+                    return Err(e);
                 }
-                Ok(Err(e)) => return Err(format!("Failed to receive completion ack: {}", e).into()),
+                Ok(None) => return Err("Receiver disconnected before acknowledging completion".into()),
                 Err(_) => {
-                    return Err("Timeout waiting for transfer completion acknowledgment".into())
+                    println!("[Transfer] Timeout waiting for transfer completion ACK");
+                    return Err("Timeout waiting for transfer completion ACK".into());
                 }
             }
         }
