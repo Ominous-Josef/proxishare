@@ -36,7 +36,7 @@ pub enum MessageType {
     ChunkData {
         transfer_id: String,
         chunk_index: u32,
-        data: Vec<u8>,
+        chunk_size: u32,
         chunk_hash: String,
     },
     ChunkAck {

@@ -50,8 +50,18 @@ impl Database {
             .connect(&db_url)
             .await?;
 
-        // Run migrations
+        // Run base migrations
         sqlx::query(schema::SCHEMA).execute(&pool).await?;
+
+        // Migrate older databases by adding missing columns
+        let _ = sqlx::query("ALTER TABLE transfers ADD COLUMN bytes_transferred INTEGER DEFAULT 0")
+            .execute(&pool)
+            .await;
+        
+        let _ = sqlx::query("ALTER TABLE transfers ADD COLUMN device_name TEXT")
+            .execute(&pool)
+            .await;
+
         println!("[Database] Initialized and migrations run");
 
         Ok(Self { pool })

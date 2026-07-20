@@ -146,9 +146,12 @@ impl FileReceiver {
                         MessageType::ChunkData {
                             transfer_id: _,
                             chunk_index: _,
-                            data,
+                            chunk_size,
                             chunk_hash,
                         } => {
+                            let mut data = vec![0u8; chunk_size as usize];
+                            recv_stream.read_exact(&mut data).await?;
+
                             if let Some(ref mut f) = file {
                                 // Verify chunk
                                 let actual_hash = blake3::hash(&data).to_hex().to_string();

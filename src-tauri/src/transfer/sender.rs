@@ -250,11 +250,12 @@ impl FileSender {
             let chunk_msg = MessageType::ChunkData {
                 transfer_id: transfer_id.clone(),
                 chunk_index,
-                data: chunk_data.to_vec(),
+                chunk_size: n as u32,
                 chunk_hash,
             };
 
             Self::write_message(&mut send_stream, &chunk_msg).await?;
+            send_stream.write_all(chunk_data).await?;
 
             total_sent += n as u64;
             chunk_index += 1;

@@ -3,6 +3,7 @@ pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS transfers (
     id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL,
+    device_name TEXT,
     file_name TEXT NOT NULL,
     file_path TEXT NOT NULL,
     total_size INTEGER NOT NULL,
