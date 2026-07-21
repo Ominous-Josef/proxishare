@@ -15,6 +15,7 @@ import {
   TransferRecord,
   useFileTransfer,
 } from "../composables/useFileTransfer";
+import { DateTime } from "luxon";
 
 const props = defineProps<{
   deviceId?: string | null;
@@ -62,27 +63,16 @@ onMounted(async () => {
 });
 
 const formatDate = (timestamp: number) => {
-  const date = new Date(timestamp * 1000);
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
+  const dt = DateTime.fromSeconds(timestamp);
+  const now = DateTime.now();
 
-  // Less than 24 hours ago
-  if (diff < 86400000) {
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // If older than 3 days, show the full date
+  if (now.diff(dt, "days").days > 3) {
+    return dt.toLocaleString(DateTime.DATE_MED);
   }
-  // Less than 7 days ago
-  if (diff < 604800000) {
-    return date.toLocaleDateString([], {
-      weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  }
-  return date.toLocaleDateString([], {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+  
+  // Otherwise, use Luxon's built-in relative formatting (e.g. "3 hours ago", "2 days ago")
+  return dt.toRelative() || dt.toLocaleString(DateTime.DATE_MED);
 };
 
 const formatBytes = (bytes: number) => {

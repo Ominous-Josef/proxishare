@@ -64,6 +64,7 @@ async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec
 
 #[tauri::command]
 async fn send_file(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     device_id: String,
     ip: String,
@@ -143,6 +144,10 @@ async fn send_file(
                 }
             }
         }
+        
+        // Notify frontend that history changed
+        use tauri::Emitter;
+        let _ = app.emit("history-updated", ());
 
         match send_result {
             Ok(_) => {

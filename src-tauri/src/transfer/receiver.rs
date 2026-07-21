@@ -256,6 +256,13 @@ impl FileReceiver {
                                 let mut transfers = self.transfers.write().await;
                                 transfers.insert(current_transfer_id.clone(), crate::TransferStatus::Cancelled);
                             }
+                            // Update database
+                            {
+                                let db_lock = self.database.read().await;
+                                if let Some(db) = &*db_lock {
+                                    let _ = db.update_transfer_status(&current_transfer_id, "cancelled", bytes_received as i64).await;
+                                }
+                            }
                             // Emit progress event
                             let _ = self.app_handle.emit(
                                 "transfer-progress",
