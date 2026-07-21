@@ -59,7 +59,11 @@ const selectAndSend = async () => {
     }
   } catch (error) {
     console.error("Error selecting/sending file:", error);
-    statusMessage.value = "Failed: " + String(error);
+    if (String(error).includes("cancelled")) {
+      statusMessage.value = "Transfer cancelled";
+    } else {
+      statusMessage.value = "Failed: " + String(error);
+    }
   } finally {
     isSending.value = false;
   }

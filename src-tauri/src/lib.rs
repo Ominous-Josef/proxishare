@@ -155,14 +155,13 @@ async fn send_file(
                 Ok(())
             }
             Err(e) => {
-                if e.contains("cancelled") {
-                    println!("[Command] Transfer cancelled by user, suppressing error");
-                    Ok(())
+                let error_msg = if e.contains("cancelled") {
+                    format!("Transfer cancelled")
                 } else {
-                    let error_msg = format!("Failed to send file: {}", e);
-                    println!("[Command] {}", error_msg);
-                    Err(error_msg)
-                }
+                    format!("Failed to send file: {}", e)
+                };
+                println!("[Command] {}", error_msg);
+                Err(error_msg)
             }
         }
     } else {
