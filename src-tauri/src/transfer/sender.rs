@@ -243,13 +243,18 @@ impl FileSender {
         loop {
             // Check for background task messages (e.g. cancellation)
             if let Ok(SenderTaskMessage::Error(e)) = rx.try_recv() {
+                let status_str = if e.to_string().contains("cancelled") {
+                    "cancelled"
+                } else {
+                    "failed"
+                };
                 let _ = self.app_handle.emit("transfer-progress", TransferProgress {
                     transfer_id: transfer_id.clone(),
                     file_name: file_name.clone(),
                     bytes_sent: total_sent,
                     total_bytes: file_size,
                     direction: "send".to_string(),
-                    status: "failed".to_string(),
+                    status: status_str.to_string(),
                 });
                 return Err(e);
             }
@@ -393,17 +398,39 @@ impl FileSender {
 
             if let Err(e) = Self::write_message(&mut send_stream, &chunk_msg).await {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() {
-                    return Err(bg_err);
-                }
-                return Err(e);
+                let final_err = if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() {
+                    bg_err
+                } else {
+                    e.into()
+                };
+                let status_str = if final_err.to_string().contains("cancelled") { "cancelled" } else { "failed" };
+                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    file_name: file_name.clone(),
+                    bytes_sent: total_sent,
+                    total_bytes: file_size,
+                    direction: "send".to_string(),
+                    status: status_str.to_string(),
+                });
+                return Err(final_err);
             }
             if let Err(e) = send_stream.write_all(chunk_data).await {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() {
-                    return Err(bg_err);
-                }
-                return Err(e.into());
+                let final_err = if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() {
+                    bg_err
+                } else {
+                    e.into()
+                };
+                let status_str = if final_err.to_string().contains("cancelled") { "cancelled" } else { "failed" };
+                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    file_name: file_name.clone(),
+                    bytes_sent: total_sent,
+                    total_bytes: file_size,
+                    direction: "send".to_string(),
+                    status: status_str.to_string(),
+                });
+                return Err(final_err);
             }
 
             total_sent += n as u64;
@@ -480,9 +507,28 @@ impl FileSender {
                     let _ = self.app_handle.emit("history-updated", ());
                 }
                 Ok(Some(SenderTaskMessage::Error(e))) => {
+                    let status_str = if e.to_string().contains("cancelled") { "cancelled" } else { "failed" };
+                    let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                        transfer_id: transfer_id.clone(),
+                        file_name: file_name.clone(),
+                        bytes_sent: file_size,
+                        total_bytes: file_size,
+                        direction: "send".to_string(),
+                        status: status_str.to_string(),
+                    });
                     return Err(e);
                 }
-                Ok(None) => return Err("Receiver disconnected before acknowledging completion".into()),
+                Ok(None) => {
+                    let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                        transfer_id: transfer_id.clone(),
+                        file_name: file_name.clone(),
+                        bytes_sent: file_size,
+                        total_bytes: file_size,
+                        direction: "send".to_string(),
+                        status: "failed".to_string(),
+                    });
+                    return Err("Receiver disconnected before acknowledging completion".into());
+                }
                 Err(_) => {
                     println!("[Transfer] Timeout waiting for transfer completion ACK");
                     let _ = self.app_handle.emit("transfer-progress", TransferProgress {

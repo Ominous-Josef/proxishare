@@ -468,6 +468,18 @@ impl FileReceiver {
                                             transfer_id: current_transfer_id.clone(),
                                         },
                                     ).await;
+                                    // Emit final cancelled status
+                                    let _ = self.app_handle.emit(
+                                        "transfer-progress",
+                                        TransferProgress {
+                                            transfer_id: current_transfer_id.clone(),
+                                            file_name: current_file_name.clone(),
+                                            bytes_sent: bytes_received,
+                                            total_bytes: current_file_size,
+                                            direction: "receive".to_string(),
+                                            status: "cancelled".to_string(),
+                                        },
+                                    );
                                     // Give sender time to read the message before closing socket
                                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                     return Err("Transfer cancelled by receiver".into());

@@ -64,6 +64,13 @@ export function useFileTransfer() {
             ? Math.round((progress.bytes_sent / progress.total_bytes) * 100)
             : 0;
 
+        const existing = activeTransfers.value.get(progress.transfer_id);
+        
+        // Prevent reverting status if we already cancelled locally
+        if (existing && existing.status === "cancelled" && progress.status === "in_progress") {
+          return;
+        }
+
         const transfer: Transfer = {
           id: progress.transfer_id,
           deviceId: "",
@@ -241,9 +248,12 @@ export function useFileTransfer() {
 
   const cancelTransfer = async (transferId: string) => {
     try {
+      const t = activeTransfers.value.get(transferId);
+      if (t) {
+        t.status = "cancelled";
+        transfers.value = Array.from(activeTransfers.value.values());
+      }
       await invoke("cancel_transfer", { transferId });
-      activeTransfers.value.delete(transferId);
-      transfers.value = Array.from(activeTransfers.value.values());
       await loadHistory();
     } catch (e) {
       console.error("Failed to cancel transfer:", e);
