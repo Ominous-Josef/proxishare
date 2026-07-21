@@ -294,6 +294,8 @@ impl FileSender {
                             )
                             .await;
                             println!("[Transfer] Transfer {} cancelled by sender", transfer_id);
+                            // Give receiver time to read the message before closing socket
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                             return Err("Transfer cancelled by user".into());
                         }
                         crate::TransferStatus::Paused => {
@@ -340,6 +342,8 @@ impl FileSender {
                             },
                         )
                         .await;
+                        // Give receiver time to read the message before closing socket
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         return Err("Transfer cancelled by user".into());
                     }
 
@@ -387,8 +391,20 @@ impl FileSender {
                 chunk_hash,
             };
 
-            Self::write_message(&mut send_stream, &chunk_msg).await?;
-            send_stream.write_all(chunk_data).await?;
+            if let Err(e) = Self::write_message(&mut send_stream, &chunk_msg).await {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() {
+                    return Err(bg_err);
+                }
+                return Err(e);
+            }
+            if let Err(e) = send_stream.write_all(chunk_data).await {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() {
+                    return Err(bg_err);
+                }
+                return Err(e.into());
+            }
 
             total_sent += n as u64;
             chunk_index += 1;

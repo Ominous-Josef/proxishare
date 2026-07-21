@@ -468,6 +468,8 @@ impl FileReceiver {
                                             transfer_id: current_transfer_id.clone(),
                                         },
                                     ).await;
+                                    // Give sender time to read the message before closing socket
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                     return Err("Transfer cancelled by receiver".into());
                                 }
                                 crate::TransferStatus::Paused => {
