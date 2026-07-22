@@ -120,7 +120,8 @@ export function useFileTransfer() {
     deviceId: string,
     filePath: string,
     ip: string,
-    port: number
+    port: number,
+    isDir: boolean = false
   ) => {
     console.log("[FileTransfer] Invoking send_file:", {
       deviceId,
@@ -134,6 +135,7 @@ export function useFileTransfer() {
         ip,
         port,
         path: filePath,
+        isDir,
       });
 
       // Update local transfer state with file path for retry
@@ -163,7 +165,8 @@ export function useFileTransfer() {
     deviceId: string,
     filePath: string,
     primaryIp: string,
-    port: number
+    port: number,
+    isDir: boolean = false
   ) => {
     try {
       // First, try to find a reachable IP for this device
@@ -178,6 +181,7 @@ export function useFileTransfer() {
         ip: ipToUse,
         port,
         path: filePath,
+        isDir,
       });
       await loadHistory();
     } catch (e) {

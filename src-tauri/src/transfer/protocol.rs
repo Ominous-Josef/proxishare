@@ -6,6 +6,13 @@ pub struct FileMetadata {
     pub size: u64,
     pub hash: String,
     pub chunk_size: u32,
+    pub is_dir: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FileEntry {
+    pub relative_path: String,
+    pub size: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -33,6 +40,15 @@ pub enum MessageType {
     },
 
     // Data transfer
+    DirectoryManifest {
+        transfer_id: String,
+        files: Vec<FileEntry>,
+    },
+    FileStart {
+        transfer_id: String,
+        relative_path: String,
+        size: u64,
+    },
     ChunkData {
         transfer_id: String,
         chunk_index: u32,

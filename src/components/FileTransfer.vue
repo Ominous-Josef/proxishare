@@ -69,6 +69,44 @@ const selectAndSend = async () => {
   }
 };
 
+const selectAndSendFolder = async () => {
+  if (!props.deviceId || !props.targetIp || !props.targetPort) {
+    statusMessage.value = "Error: No device selected";
+    return;
+  }
+
+  try {
+    const selected = await open({
+      multiple: false,
+      directory: true,
+    });
+
+    if (selected && typeof selected === "string") {
+      isSending.value = true;
+      statusMessage.value = "Sending folder...";
+      await sendFile(
+        props.deviceId,
+        selected,
+        props.targetIp,
+        props.targetPort,
+        true // isDir
+      );
+      statusMessage.value = "Folder sent successfully!";
+      setTimeout(() => {
+        statusMessage.value = null;
+      }, 3000);
+    }
+  } catch (error) {
+    if (String(error).includes("cancelled")) {
+      statusMessage.value = "Transfer cancelled";
+    } else {
+      statusMessage.value = "Failed: " + String(error);
+    }
+  } finally {
+    isSending.value = false;
+  }
+};
+
 const handleRetry = async (t: any) => {
   if (t.filePath && props.deviceId && props.targetIp && props.targetPort) {
     try {
@@ -147,6 +185,28 @@ const formatBytes = (bytes: number) => {
           </svg>
           <span v-else class="spinner-small"></span>
           {{ isSending ? "Sending..." : "Select File to Send" }}
+        </button>
+        <button
+          class="select-btn select-folder-btn"
+          :disabled="!deviceId || isSending"
+          @click="selectAndSendFolder"
+        >
+          <svg
+            v-if="!isSending"
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <span v-else class="spinner-small"></span>
+          {{ isSending ? "Sending..." : "Select Folder to Send" }}
         </button>
       </div>
 
@@ -301,6 +361,12 @@ const formatBytes = (bytes: number) => {
   gap: 1.5rem;
 }
 
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .select-btn {
   display: flex;
   align-items: center;
@@ -327,6 +393,18 @@ const formatBytes = (bytes: number) => {
   opacity: 0.5;
   cursor: not-allowed;
   filter: grayscale(1);
+}
+
+.select-folder-btn {
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  color: #818cf8;
+}
+
+.select-folder-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.25);
+  border-color: rgba(99, 102, 241, 0.5);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.2);
 }
 
 .transfer-list {

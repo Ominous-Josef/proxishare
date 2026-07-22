@@ -143,6 +143,7 @@ impl TransferManager {
         target_port: u16,
         file_path: PathBuf,
         transfers: crate::TransferRegistry,
+        is_dir: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!(
             "[Transfer] Attempting to send file {:?} to {}:{}",
@@ -180,7 +181,7 @@ impl TransferManager {
         println!("[Transfer] Starting file transfer with ID: {}", transfer_id);
 
         match sender
-            .send_file(transfer_id.clone(), file_path.clone(), transfers)
+            .send_file(transfer_id.clone(), file_path.clone(), transfers, is_dir)
             .await
         {
             Ok(_) => {

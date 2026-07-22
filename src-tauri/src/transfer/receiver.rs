@@ -55,6 +55,7 @@ impl FileReceiver {
         let mut current_file_name = String::new();
         let mut current_file_size: u64 = 0;
         let mut last_status = crate::TransferStatus::InProgress;
+        let mut is_dir = false;
 
         let mut status_ticker = tokio::time::interval(std::time::Duration::from_millis(500));
 
@@ -128,6 +129,7 @@ impl FileReceiver {
                             current_transfer_id = transfer_id.clone();
                             current_file_name = file_name.to_string();
                             current_file_size = metadata.size;
+                            is_dir = metadata.is_dir.unwrap_or(false);
 
                             // Update registry as Pending
                             {
@@ -168,6 +170,65 @@ impl FileReceiver {
                                     "senderName": sender_name,
                                 })
                             );
+                        }
+                        MessageType::DirectoryManifest { transfer_id, files } => {
+                            if transfer_id == current_transfer_id {
+                                let base_path = self.save_directory.join(&current_file_name);
+                                for file_entry in files {
+                                    // Protect against path traversal again
+                                    let rel_path = std::path::Path::new(&file_entry.relative_path);
+                                    let mut safe = true;
+                                    for comp in rel_path.components() {
+                                        if matches!(comp, std::path::Component::ParentDir | std::path::Component::RootDir) {
+                                            safe = false;
+                                        }
+                                    }
+                                    if safe {
+                                        let full_path = base_path.join(rel_path);
+                                        if let Some(parent) = full_path.parent() {
+                                            let _ = tokio::fs::create_dir_all(parent).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        MessageType::FileStart { transfer_id, relative_path, size } => {
+                            if transfer_id == current_transfer_id {
+                                // Close previous file if any
+                                if let Some(mut f) = file.take() {
+                                    let _ = f.flush().await;
+                                }
+
+                                let rel_path = std::path::Path::new(&relative_path);
+                                // Check traversal
+                                let mut safe = true;
+                                for comp in rel_path.components() {
+                                    if matches!(comp, std::path::Component::ParentDir | std::path::Component::RootDir) {
+                                        safe = false;
+                                    }
+                                }
+                                if safe {
+                                    let base_path = if is_dir {
+                                        self.save_directory.join(&current_file_name)
+                                    } else {
+                                        self.save_directory.clone()
+                                    };
+                                    let full_path = base_path.join(rel_path);
+                                    
+                                    if let Some(parent) = full_path.parent() {
+                                        let _ = tokio::fs::create_dir_all(parent).await;
+                                    }
+
+                                    let std_file = std::fs::OpenOptions::new()
+                                        .write(true)
+                                        .create(true)
+                                        .truncate(true)
+                                        .open(&full_path)?;
+                                    use fs2::FileExt;
+                                    let _ = std_file.allocate(size);
+                                    file = Some(File::from_std(std_file));
+                                }
+                            }
                         }
                         MessageType::ChunkData {
                             transfer_id: _,
@@ -437,17 +498,22 @@ impl FileReceiver {
                                         },
                                     ).await;
 
-                                    let path = self.save_directory.join(&current_file_name);
-                                    let std_file = std::fs::OpenOptions::new()
-                                        .write(true)
-                                        .create(true)
-                                        .truncate(true)
-                                        .open(&path)?;
+                                    if !is_dir {
+                                        let path = self.save_directory.join(&current_file_name);
+                                        let std_file = std::fs::OpenOptions::new()
+                                            .write(true)
+                                            .create(true)
+                                            .truncate(true)
+                                            .open(&path)?;
 
-                                    use fs2::FileExt;
-                                    let _ = std_file.allocate(current_file_size);
+                                        use fs2::FileExt;
+                                        let _ = std_file.allocate(current_file_size);
 
-                                    file = Some(File::from_std(std_file));
+                                        file = Some(File::from_std(std_file));
+                                    } else {
+                                        let path = self.save_directory.join(&current_file_name);
+                                        let _ = tokio::fs::create_dir_all(&path).await;
+                                    }
                                 }
                                 crate::TransferStatus::Cancelled if last_status == crate::TransferStatus::Pending => {
                                     println!("[Receiver] User declined file. Sending FileReject...");

@@ -80,9 +80,9 @@ async fn send_file(
         .unwrap_or_else(|| "unknown".to_string());
 
     // Get file size for logging
-    let file_size = std::fs::metadata(&path)
-        .map(|m| m.len() as i64)
-        .unwrap_or(0);
+    let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    let is_dir = metadata.is_dir();
+    let file_size = if is_dir { 0 } else { metadata.len() as i64 }; // size calculated later for dirs
 
     let transfer_id = uuid::Uuid::new_v4().to_string();
 
@@ -121,8 +121,9 @@ async fn send_file(
                 transfer_id.clone(),
                 ip.clone(),
                 port,
-                file_path,
+                file_path.clone(),
                 state.transfers.clone(),
+                is_dir,
             )
             .await
             .map_err(|e| e.to_string());
@@ -156,7 +157,7 @@ async fn send_file(
             }
             Err(e) => {
                 let error_msg = if e.contains("cancelled") {
-                    format!("Transfer cancelled")
+                    "Transfer cancelled".to_string()
                 } else {
                     format!("Failed to send file: {}", e)
                 };

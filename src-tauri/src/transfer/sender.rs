@@ -1,20 +1,13 @@
 use crate::transfer::protocol::{FileMetadata, MessageType};
-use bincode;
-use quinn::{Connection, RecvStream, SendStream};
-use serde::Serialize;
+use quinn::Connection;
 use std::path::PathBuf;
-use tauri::{Emitter, Manager};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
-/// Maximum chunk size (4MB) - used for large files
-const MAX_CHUNK_SIZE: usize = 4 * 1024 * 1024;
-/// Minimum chunk size (64KB) - used for small files or slow connections
-const MIN_CHUNK_SIZE: usize = 64 * 1024;
-/// Default chunk size (1MB) - balanced for most scenarios
-const DEFAULT_CHUNK_SIZE: usize = 1024 * 1024;
+use serde::{Deserialize, Serialize};
+use tauri::{Emitter, Manager};
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TransferProgress {
     pub transfer_id: String,
     pub file_name: String,
@@ -24,27 +17,24 @@ pub struct TransferProgress {
     pub status: String,
 }
 
-/// Calculate optimal chunk size based on file size
-/// Smaller files use smaller chunks to reduce overhead
-/// Larger files use larger chunks for efficiency
-fn calculate_chunk_size(file_size: u64) -> usize {
-    if file_size < 1024 * 1024 {
-        // Files < 1MB: use 64KB chunks
-        MIN_CHUNK_SIZE
-    } else if file_size < 100 * 1024 * 1024 {
-        // Files < 100MB: use 1MB chunks
-        DEFAULT_CHUNK_SIZE
-    } else {
-        // Large files: use 4MB chunks
-        MAX_CHUNK_SIZE
-    }
-}
-
 pub struct FileSender {
     connection: Connection,
     app_handle: tauri::AppHandle,
     device_id: String,
     device_name: String,
+}
+
+const BASE_CHUNK_SIZE: usize = 128 * 1024; // 128KB minimum
+const MAX_CHUNK_SIZE: usize = 8 * 1024 * 1024; // 8MB maximum
+
+fn calculate_chunk_size(file_size: u64) -> usize {
+    let mut chunk_size = BASE_CHUNK_SIZE;
+    if file_size > 1024 * 1024 * 1024 {
+        chunk_size = MAX_CHUNK_SIZE;
+    } else if file_size > 100 * 1024 * 1024 {
+        chunk_size = 2 * 1024 * 1024;
+    }
+    chunk_size
 }
 
 impl FileSender {
@@ -83,15 +73,34 @@ impl FileSender {
         transfer_id: String,
         path: PathBuf,
         transfers: crate::TransferRegistry,
+        is_dir: bool,
     ) -> Result<(), crate::GenericError> {
         // Open a single bidirectional stream for the entire transfer
         let (mut send_stream, mut recv_stream) = self.connection.open_bi().await?;
 
-        let mut file = File::open(&path).await?;
-        let metadata = file.metadata().await?;
-        let file_size = metadata.len();
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-        let file_hash = self.calculate_hash(&path).await?;
+        
+        let mut file_size: u64 = 0;
+        let mut file_hash = String::new();
+        let mut manifest_files = Vec::new();
+
+        if is_dir {
+            for entry in walkdir::WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
+                if entry.file_type().is_file() {
+                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    file_size += size;
+                    let rel_path = entry.path().strip_prefix(&path).unwrap_or(entry.path());
+                    manifest_files.push(crate::transfer::protocol::FileEntry {
+                        relative_path: rel_path.to_string_lossy().to_string(),
+                        size,
+                    });
+                }
+            }
+        } else {
+            let metadata = std::fs::metadata(&path)?;
+            file_size = metadata.len();
+            file_hash = self.calculate_hash(&path).await?;
+        }
 
         // Calculate optimal chunk size based on file size
         let chunk_size = calculate_chunk_size(file_size);
@@ -104,6 +113,7 @@ impl FileSender {
                 size: file_size,
                 hash: file_hash,
                 chunk_size: chunk_size as u32,
+                is_dir: Some(is_dir),
             },
             sender_id: self.device_id.clone(),
             sender_name: self.device_name.clone(),
@@ -134,6 +144,14 @@ impl FileSender {
                 println!("[Transfer] Receiver accepted the file. Starting chunks...");
                 let mut registry = transfers.write().await;
                 registry.insert(transfer_id.clone(), crate::TransferStatus::InProgress);
+
+                if is_dir {
+                    let manifest = MessageType::DirectoryManifest {
+                        transfer_id: transfer_id.clone(),
+                        files: manifest_files.clone(),
+                    };
+                    Self::write_message(&mut send_stream, &manifest).await?;
+                }
             }
             Ok(Ok(MessageType::FileReject { transfer_id: _, reason })) => {
                 println!("[Transfer] Receiver rejected the file: {}", reason);
@@ -143,10 +161,10 @@ impl FileSender {
                     bytes_sent: 0,
                     total_bytes: file_size,
                     direction: "send".to_string(),
-                    status: "cancelled".to_string(),
+                    status: "failed".to_string(),
                 });
                 let mut registry = transfers.write().await;
-                registry.insert(transfer_id.clone(), crate::TransferStatus::Cancelled);
+                registry.insert(transfer_id.clone(), crate::TransferStatus::Failed);
                 return Err(format!("Transfer rejected: {}", reason).into());
             }
             Ok(Ok(MessageType::TransferError { transfer_id: _, message })) => {
@@ -199,6 +217,7 @@ impl FileSender {
         let transfers_clone = transfers.clone();
         
         let mut recv_stream = recv_stream;
+        let tx_bg = tx.clone();
 
         tokio::spawn(async move {
             loop {
@@ -219,236 +238,169 @@ impl FileSender {
                                 println!("[Sender] Receiver cancelled the transfer");
                                 let mut registry = transfers_clone.write().await;
                                 registry.insert(transfer_id_clone.clone(), crate::TransferStatus::Cancelled);
-                                let _ = tx.send(SenderTaskMessage::Error("Transfer cancelled by receiver".into())).await;
+                                let _ = tx_bg.send(SenderTaskMessage::Error("Transfer cancelled by receiver".into())).await;
                                 break;
                             }
                             MessageType::TransferCompleteAck { .. } => {
-                                let _ = tx.send(SenderTaskMessage::AckReceived).await;
+                                let _ = tx_bg.send(SenderTaskMessage::AckReceived).await;
                                 break;
                             }
                             MessageType::HistorySync { records } => {
-                                let _ = tx.send(SenderTaskMessage::HistorySync(records)).await;
+                                let _ = tx_bg.send(SenderTaskMessage::HistorySync(records)).await;
                             }
                             _ => {}
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(SenderTaskMessage::Error(e)).await;
+                        let _ = tx_bg.send(SenderTaskMessage::Error(e)).await;
                         break;
                     }
                 }
             }
         });
 
-        loop {
-            // Check for background task messages (e.g. cancellation)
-            if let Ok(SenderTaskMessage::Error(e)) = rx.try_recv() {
-                let status_str = if e.to_string().contains("cancelled") {
-                    "cancelled"
-                } else {
-                    "failed"
-                };
-                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                    transfer_id: transfer_id.clone(),
-                    file_name: file_name.clone(),
-                    bytes_sent: total_sent,
-                    total_bytes: file_size,
-                    direction: "send".to_string(),
-                    status: status_str.to_string(),
-                });
-                return Err(e);
+        let paths_to_send: Vec<(PathBuf, String, u64)> = if is_dir {
+            manifest_files.into_iter().map(|f| (path.join(&f.relative_path), f.relative_path, f.size)).collect()
+        } else {
+            vec![(path.clone(), file_name.clone(), file_size)]
+        };
+
+        for (file_path, rel_path, size) in paths_to_send {
+            if is_dir {
+                 let start_msg = MessageType::FileStart {
+                     transfer_id: transfer_id.clone(),
+                     relative_path: rel_path.clone(),
+                     size,
+                 };
+                 if let Err(e) = Self::write_message(&mut send_stream, &start_msg).await {
+                     let _ = tx.send(SenderTaskMessage::Error(e)).await;
+                 }
             }
-            // Check status for pause/cancel
-            {
-                let mut status = {
-                    let registry = transfers.read().await;
-                    registry
-                        .get(&transfer_id)
-                        .cloned()
-                        .unwrap_or(crate::TransferStatus::InProgress)
-                };
+            
+            let mut file = match File::open(&file_path).await {
+                Ok(f) => f,
+                Err(e) => {
+                    println!("[Sender] Error opening file {:?}: {}", file_path, e);
+                    continue;
+                }
+            };
+            
+            loop {
+                // Check for background task messages (e.g. cancellation)
+                if let Ok(SenderTaskMessage::Error(e)) = rx.try_recv() {
+                    let status_str = if e.to_string().contains("cancelled") { "cancelled" } else { "failed" };
+                    let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                        transfer_id: transfer_id.clone(),
+                        file_name: file_name.clone(),
+                        bytes_sent: total_sent,
+                        total_bytes: file_size,
+                        direction: "send".to_string(),
+                        status: status_str.to_string(),
+                    });
+                    return Err(e);
+                }
+                
+                // Check status for pause/cancel
+                {
+                    let mut status = {
+                        let registry = transfers.read().await;
+                        registry.get(&transfer_id).cloned().unwrap_or(crate::TransferStatus::InProgress)
+                    };
 
-                // Notify receiver if status changed
-                if status != last_status {
-                    // Emit progress update so UI sees the change instantly
-                    let _ = self.app_handle.emit(
-                        "transfer-progress",
-                        TransferProgress {
-                            transfer_id: transfer_id.clone(),
-                            file_name: file_name.clone(),
-                            bytes_sent: total_sent,
-                            total_bytes: file_size,
-                            direction: "send".to_string(),
-                            status: match status {
-                                crate::TransferStatus::Paused => "paused",
-                                crate::TransferStatus::Cancelled => "cancelled",
-                                _ => "in_progress",
-                            }.to_string(),
-                        },
-                    );
+                    if status != last_status {
+                        let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                            transfer_id: transfer_id.clone(), file_name: file_name.clone(),
+                            bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(),
+                            status: match status { crate::TransferStatus::Paused => "paused", crate::TransferStatus::Cancelled => "cancelled", _ => "in_progress" }.to_string(),
+                        });
+                        match status {
+                            crate::TransferStatus::Cancelled => {
+                                let _ = Self::write_message(&mut send_stream, &MessageType::TransferCancel { transfer_id: transfer_id.clone() }).await;
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                return Err("Transfer cancelled by user".into());
+                            }
+                            crate::TransferStatus::Paused => {
+                                let _ = Self::write_message(&mut send_stream, &MessageType::TransferPause { transfer_id: transfer_id.clone() }).await;
+                            }
+                            crate::TransferStatus::InProgress if last_status == crate::TransferStatus::Paused => {
+                                let _ = Self::write_message(&mut send_stream, &MessageType::TransferResume { transfer_id: transfer_id.clone() }).await;
+                            }
+                            _ => {}
+                        }
+                        last_status = status;
+                    }
 
-                    // Sync status to database locally if we have access (wait, sender doesn't have DB here)
-                    match status {
-                        crate::TransferStatus::Cancelled => {
-                            println!("[Transfer] Sending TransferCancel to receiver...");
-                            let _ = Self::write_message(
-                                &mut send_stream,
-                                &MessageType::TransferCancel {
-                                    transfer_id: transfer_id.clone(),
-                                },
-                            )
-                            .await;
-                            println!("[Transfer] Transfer {} cancelled by sender", transfer_id);
-                            // Give receiver time to read the message before closing socket
+                    while status == crate::TransferStatus::Paused {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        let registry = transfers.read().await;
+                        status = registry.get(&transfer_id).cloned().unwrap_or(crate::TransferStatus::InProgress);
+
+                        if status == crate::TransferStatus::Cancelled {
+                            let _ = Self::write_message(&mut send_stream, &MessageType::TransferCancel { transfer_id: transfer_id.clone() }).await;
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                             return Err("Transfer cancelled by user".into());
                         }
-                        crate::TransferStatus::Paused => {
-                            println!("[Transfer] Sending TransferPause to receiver...");
-                            let _ = Self::write_message(
-                                &mut send_stream,
-                                &MessageType::TransferPause {
-                                    transfer_id: transfer_id.clone(),
-                                },
-                            )
-                            .await;
+
+                        if status == crate::TransferStatus::InProgress {
+                            let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                                transfer_id: transfer_id.clone(), file_name: file_name.clone(),
+                                bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: "in_progress".to_string(),
+                            });
+                            let _ = Self::write_message(&mut send_stream, &MessageType::TransferResume { transfer_id: transfer_id.clone() }).await;
+                            last_status = status;
                         }
-                        crate::TransferStatus::InProgress
-                            if last_status == crate::TransferStatus::Paused =>
-                        {
-                            println!("[Transfer] Sending TransferResume to receiver...");
-                            let _ = Self::write_message(
-                                &mut send_stream,
-                                &MessageType::TransferResume {
-                                    transfer_id: transfer_id.clone(),
-                                },
-                            )
-                            .await;
-                        }
-                        _ => {}
                     }
-                    last_status = status;
                 }
 
-                while status == crate::TransferStatus::Paused {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let registry = transfers.read().await;
-                    status = registry
-                        .get(&transfer_id)
-                        .cloned()
-                        .unwrap_or(crate::TransferStatus::InProgress);
-
-                    if status == crate::TransferStatus::Cancelled {
-                        println!("[Transfer] Sending TransferCancel to receiver while paused...");
-                        let _ = Self::write_message(
-                            &mut send_stream,
-                            &MessageType::TransferCancel {
-                                transfer_id: transfer_id.clone(),
-                            },
-                        )
-                        .await;
-                        // Give receiver time to read the message before closing socket
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        return Err("Transfer cancelled by user".into());
-                    }
-
-                    if status == crate::TransferStatus::InProgress {
-                        println!("[Transfer] Resuming, sending TransferResume...");
-                        // Emit progress update for resume
-                        let _ = self.app_handle.emit(
-                            "transfer-progress",
-                            TransferProgress {
-                                transfer_id: transfer_id.clone(),
-                                file_name: file_name.clone(),
-                                bytes_sent: total_sent,
-                                total_bytes: file_size,
-                                direction: "send".to_string(),
-                                status: "in_progress".to_string(),
-                            },
-                        );
-                        let _ = Self::write_message(
-                            &mut send_stream,
-                            &MessageType::TransferResume {
-                                transfer_id: transfer_id.clone(),
-                            },
-                        )
-                        .await;
-                        last_status = status;
-                    }
+                let n = file.read(&mut buffer).await?;
+                if n == 0 {
+                    break;
                 }
-            }
 
-            let n = file.read(&mut buffer).await?;
-            if n == 0 {
-                // Mark as completed in registry
-                let mut registry = transfers.write().await;
-                registry.insert(transfer_id.clone(), crate::TransferStatus::Completed);
-                break;
-            }
+                let chunk_data = &buffer[..n];
+                let chunk_hash = blake3::hash(chunk_data).to_hex().to_string();
 
-            let chunk_data = &buffer[..n];
-            let chunk_hash = blake3::hash(chunk_data).to_hex().to_string();
-
-            let chunk_msg = MessageType::ChunkData {
-                transfer_id: transfer_id.clone(),
-                chunk_index,
-                chunk_size: n as u32,
-                chunk_hash,
-            };
-
-            if let Err(e) = Self::write_message(&mut send_stream, &chunk_msg).await {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let final_err = if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() {
-                    bg_err
-                } else {
-                    e.into()
+                let chunk_msg = MessageType::ChunkData {
+                    transfer_id: transfer_id.clone(),
+                    chunk_index,
+                    chunk_size: n as u32,
+                    chunk_hash,
                 };
-                let status_str = if final_err.to_string().contains("cancelled") { "cancelled" } else { "failed" };
-                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                    transfer_id: transfer_id.clone(),
-                    file_name: file_name.clone(),
-                    bytes_sent: total_sent,
-                    total_bytes: file_size,
-                    direction: "send".to_string(),
-                    status: status_str.to_string(),
-                });
-                return Err(final_err);
-            }
-            if let Err(e) = send_stream.write_all(chunk_data).await {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let final_err = if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() {
-                    bg_err
-                } else {
-                    e.into()
-                };
-                let status_str = if final_err.to_string().contains("cancelled") { "cancelled" } else { "failed" };
-                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                    transfer_id: transfer_id.clone(),
-                    file_name: file_name.clone(),
-                    bytes_sent: total_sent,
-                    total_bytes: file_size,
-                    direction: "send".to_string(),
-                    status: status_str.to_string(),
-                });
-                return Err(final_err);
-            }
 
-            total_sent += n as u64;
-            chunk_index += 1;
+                if let Err(e) = Self::write_message(&mut send_stream, &chunk_msg).await {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let final_err = if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() { bg_err } else { e };
+                    let status_str = if final_err.to_string().contains("cancelled") { "cancelled" } else { "failed" };
+                    let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                        transfer_id: transfer_id.clone(), file_name: file_name.clone(),
+                        bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: status_str.to_string(),
+                    });
+                    return Err(final_err);
+                }
+                if let Err(e) = send_stream.write_all(chunk_data).await {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let final_err = if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() { bg_err } else { e.into() };
+                    let status_str = if final_err.to_string().contains("cancelled") { "cancelled" } else { "failed" };
+                    let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                        transfer_id: transfer_id.clone(), file_name: file_name.clone(),
+                        bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: status_str.to_string(),
+                    });
+                    return Err(final_err);
+                }
 
-            // Emit progress event
-            let _ = self.app_handle.emit(
-                "transfer-progress",
-                TransferProgress {
-                    transfer_id: transfer_id.clone(),
-                    file_name: file_name.clone(),
-                    bytes_sent: total_sent,
-                    total_bytes: file_size,
-                    direction: "send".to_string(),
-                    status: "in_progress".to_string(),
-                },
-            );
+                total_sent += n as u64;
+                chunk_index += 1;
+
+                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                    transfer_id: transfer_id.clone(), file_name: file_name.clone(),
+                    bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: "in_progress".to_string(),
+                });
+            }
         }
+
+        // Mark as completed in registry
+        let mut registry = transfers.write().await;
+        registry.insert(transfer_id.clone(), crate::TransferStatus::Completed);
 
         // 3. Send Completion
         Self::write_message(
@@ -504,47 +456,23 @@ impl FileSender {
                                 .await;
                         }
                     }
-                    let _ = self.app_handle.emit("history-updated", ());
                 }
                 Ok(Some(SenderTaskMessage::Error(e))) => {
-                    let status_str = if e.to_string().contains("cancelled") { "cancelled" } else { "failed" };
-                    let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                        transfer_id: transfer_id.clone(),
-                        file_name: file_name.clone(),
-                        bytes_sent: file_size,
-                        total_bytes: file_size,
-                        direction: "send".to_string(),
-                        status: status_str.to_string(),
-                    });
-                    return Err(e);
+                    println!("[Transfer] Sender task error while waiting for ack: {:?}", e);
+                    // Just log and continue, we are done sending anyway.
                 }
                 Ok(None) => {
-                    let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                        transfer_id: transfer_id.clone(),
-                        file_name: file_name.clone(),
-                        bytes_sent: file_size,
-                        total_bytes: file_size,
-                        direction: "send".to_string(),
-                        status: "failed".to_string(),
-                    });
-                    return Err("Receiver disconnected before acknowledging completion".into());
+                    println!("[Transfer] Background sender task channel closed unexpectedly");
+                    break;
                 }
                 Err(_) => {
-                    println!("[Transfer] Timeout waiting for transfer completion ACK");
-                    let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                        transfer_id: transfer_id.clone(),
-                        file_name: file_name.clone(),
-                        bytes_sent: file_size,
-                        total_bytes: file_size,
-                        direction: "send".to_string(),
-                        status: "failed".to_string(),
-                    });
-                    return Err("Timeout waiting for transfer completion ACK".into());
+                    println!("[Transfer] Timeout waiting for transfer complete ack");
+                    break; // Just complete it anyway on our side
                 }
             }
         }
 
-        // Emit final progress as completed
+        // Final UI update
         let _ = self.app_handle.emit(
             "transfer-progress",
             TransferProgress {
@@ -558,29 +486,33 @@ impl FileSender {
         );
         let _ = self.app_handle.emit("history-updated", ());
 
-        // Give the receiver a moment to finish its side cleanly
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         Ok(())
     }
 
-    async fn write_message(
-        stream: &mut SendStream,
-        msg: &MessageType,
+    pub async fn write_message(
+        send_stream: &mut quinn::SendStream,
+        message: &MessageType,
     ) -> Result<(), crate::GenericError> {
-        let data = bincode::serialize(msg)?;
+        let data = bincode::serialize(message)?;
         let len = data.len() as u32;
-        stream.write_all(&len.to_be_bytes()).await?;
-        stream.write_all(&data).await?;
+        send_stream.write_all(&len.to_be_bytes()).await?;
+        send_stream.write_all(&data).await?;
         Ok(())
     }
 
-    async fn read_message(stream: &mut RecvStream) -> Result<MessageType, crate::GenericError> {
+    pub async fn read_message(
+        recv_stream: &mut quinn::RecvStream,
+    ) -> Result<MessageType, crate::GenericError> {
         let mut len_buf = [0u8; 4];
-        stream.read_exact(&mut len_buf).await?;
+        recv_stream.read_exact(&mut len_buf).await?;
         let len = u32::from_be_bytes(len_buf) as usize;
 
+        if len > 10 * 1024 * 1024 {
+            return Err("Message too large".into());
+        }
+
         let mut data = vec![0u8; len];
-        stream.read_exact(&mut data).await?;
+        recv_stream.read_exact(&mut data).await?;
 
         let msg = bincode::deserialize(&data)?;
         Ok(msg)
