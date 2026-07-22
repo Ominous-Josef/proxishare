@@ -303,11 +303,33 @@ const formatBytes = (bytes: number) => {
                   ? "Failed"
                   : t.status === "cancelled"
                   ? "Cancelled"
+                  : t.status === "partial_success"
+                  ? "Partial Success"
                   : t.direction === "send"
                   ? "Uploading"
                   : "Downloading"
               }}
             </span>
+          </div>
+
+          <div v-if="t.folderManifest && t.folderManifest.length > 0" class="folder-details">
+            <details>
+              <summary>Folder Details ({{ t.folderManifest.length }} files)</summary>
+              <div class="folder-file-list">
+                <div v-for="f in t.folderManifest" :key="f.relative_path" class="folder-file-item">
+                  <span class="folder-file-name" :title="f.relative_path">{{ f.relative_path }}</span>
+                  <span v-if="t.currentFilePath === f.relative_path" class="folder-file-progress active">
+                    {{ t.currentFileSent ? formatBytes(t.currentFileSent) : '0 Bytes' }} / {{ formatBytes(f.size) }}
+                  </span>
+                  <span v-else-if="t.status === 'completed' || (t.currentFilePath && t.folderManifest.findIndex(m => m.relative_path === t.currentFilePath) > t.folderManifest.indexOf(f))" class="folder-file-progress done">
+                    Done
+                  </span>
+                  <span v-else class="folder-file-progress waiting">
+                    {{ formatBytes(f.size) }}
+                  </span>
+                </div>
+              </div>
+            </details>
           </div>
         </div>
       </div>
@@ -580,9 +602,79 @@ const formatBytes = (bytes: number) => {
   color: #22c55e;
 }
 
-.status-message.error {
+.status-label.failed,
+.status-label.cancelled {
   background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
+}
+
+.status-label.partial_success {
+  background: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+}
+
+/* Folder Details Styling */
+.folder-details {
+  margin-top: 1rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.folder-details details summary {
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #cbd5e1;
+  user-select: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.folder-details details summary:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.folder-file-list {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 0.5rem 0;
+}
+
+.folder-file-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.4rem 1rem;
+  font-size: 0.8rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+}
+
+.folder-file-item:last-child {
+  border-bottom: none;
+}
+
+.folder-file-name {
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+
+.folder-file-progress {
+  color: #64748b;
+  font-family: monospace;
+}
+
+.folder-file-progress.active {
+  color: #6366f1;
+}
+
+.folder-file-progress.done {
+  color: #10b981;
+}
+
+.folder-file-progress.waiting {
+  opacity: 0.5;
 }
 
 .spinner-small {

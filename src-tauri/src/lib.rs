@@ -25,6 +25,7 @@ pub enum TransferStatus {
     Paused,
     Cancelled,
     Completed,
+    PartialSuccess,
     Failed,
 }
 
@@ -115,56 +116,61 @@ async fn send_file(
 
     let tm_opt = state.transfer.read().await.clone();
     if let Some(tm) = tm_opt {
-        // Convert result to Send-compatible type immediately
-        let send_result: Result<(), String> = tm
-            .send_file(
-                transfer_id.clone(),
-                ip.clone(),
-                port,
-                file_path.clone(),
-                state.transfers.clone(),
-                is_dir,
-            )
-            .await
-            .map_err(|e| e.to_string());
+        let app_clone = app.clone();
+        let db_clone = state.database.clone();
+        let transfers_clone = state.transfers.clone();
+        
+        tokio::spawn(async move {
+            let send_result: Result<(), String> = tm
+                .send_file(
+                    transfer_id.clone(),
+                    ip.clone(),
+                    port,
+                    file_path.clone(),
+                    transfers_clone.clone(),
+                    is_dir,
+                )
+                .await
+                .map_err(|e| e.to_string());
 
-        // Update transfer status
-        {
-            let db_lock = state.database.read().await;
-            if let Some(db) = &*db_lock {
-                let status = match &send_result {
-                    Ok(_) => "completed",
-                    Err(e) if e.contains("cancelled") => "cancelled",
-                    Err(_) => "failed",
-                };
-                if let Err(e) = db
-                    .update_transfer_status(&transfer_id, status, file_size)
-                    .await
-                {
-                    println!("[Database] Failed to update transfer status: {:?}", e);
+            // Update transfer status
+            {
+                let db_lock = db_clone.read().await;
+                if let Some(db) = &*db_lock {
+                    let status = match &send_result {
+                        Ok(_) => "completed",
+                        Err(e) if e.contains("cancelled") => "cancelled",
+                        Err(_) => "failed",
+                    };
+                    if let Err(e) = db
+                        .update_transfer_status(&transfer_id, status, file_size)
+                        .await
+                    {
+                        println!("[Database] Failed to update transfer status: {:?}", e);
+                    }
                 }
             }
-        }
-        
-        // Notify frontend that history changed
-        use tauri::Emitter;
-        let _ = app.emit("history-updated", ());
+            
+            // Notify frontend that history changed
+            use tauri::Emitter;
+            let _ = app_clone.emit("history-updated", ());
 
-        match send_result {
-            Ok(_) => {
-                println!("[Command] send_file completed successfully");
-                Ok(())
+            match send_result {
+                Ok(_) => {
+                    println!("[Command] send_file completed successfully");
+                }
+                Err(e) => {
+                    let error_msg = if e.contains("cancelled") {
+                        "Transfer cancelled".to_string()
+                    } else {
+                        format!("Failed to send file: {}", e)
+                    };
+                    println!("[Command] {}", error_msg);
+                }
             }
-            Err(e) => {
-                let error_msg = if e.contains("cancelled") {
-                    "Transfer cancelled".to_string()
-                } else {
-                    format!("Failed to send file: {}", e)
-                };
-                println!("[Command] {}", error_msg);
-                Err(error_msg)
-            }
-        }
+        });
+
+        Ok(())
     } else {
         let error_msg = "Transfer manager not initialized".to_string();
         println!("[Command] {}", error_msg);

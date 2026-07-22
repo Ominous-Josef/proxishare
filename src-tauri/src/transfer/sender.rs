@@ -15,6 +15,28 @@ pub struct TransferProgress {
     pub total_bytes: u64,
     pub direction: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_file_sent: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_file_total: Option<u64>,
+}
+
+impl Default for TransferProgress {
+    fn default() -> Self {
+        Self {
+            transfer_id: String::new(),
+            file_name: String::new(),
+            bytes_sent: 0,
+            total_bytes: 0,
+            direction: String::new(),
+            status: String::new(),
+            current_file_path: None,
+            current_file_sent: None,
+            current_file_total: None,
+        }
+    }
 }
 
 pub struct FileSender {
@@ -96,6 +118,10 @@ impl FileSender {
                     });
                 }
             }
+            let _ = self.app_handle.emit("folder-manifest", serde_json::json!({
+                "transfer_id": transfer_id,
+                "files": manifest_files
+            }));
         } else {
             let metadata = std::fs::metadata(&path)?;
             file_size = metadata.len();
@@ -130,7 +156,9 @@ impl FileSender {
                 total_bytes: file_size,
                 direction: "send".to_string(),
                 status: "pending".to_string(),
-            },
+            
+                    ..Default::default()
+                },
         );
 
         // Wait for FileAccept or FileReject
@@ -162,6 +190,8 @@ impl FileSender {
                     total_bytes: file_size,
                     direction: "send".to_string(),
                     status: "failed".to_string(),
+                
+                    ..Default::default()
                 });
                 let mut registry = transfers.write().await;
                 registry.insert(transfer_id.clone(), crate::TransferStatus::Failed);
@@ -176,6 +206,8 @@ impl FileSender {
                     total_bytes: file_size,
                     direction: "send".to_string(),
                     status: "failed".to_string(),
+                
+                    ..Default::default()
                 });
                 let mut registry = transfers.write().await;
                 registry.insert(transfer_id.clone(), crate::TransferStatus::Failed);
@@ -192,6 +224,7 @@ impl FileSender {
                     total_bytes: file_size,
                     direction: "send".to_string(),
                     status: "cancelled".to_string(),
+                    ..Default::default()
                 });
                 let mut registry = transfers.write().await;
                 registry.insert(transfer_id.clone(), crate::TransferStatus::Cancelled);
@@ -265,6 +298,7 @@ impl FileSender {
             vec![(path.clone(), file_name.clone(), file_size)]
         };
 
+        let mut partial_success = false;
         for (file_path, rel_path, size) in paths_to_send {
             if is_dir {
                  let start_msg = MessageType::FileStart {
@@ -281,9 +315,13 @@ impl FileSender {
                 Ok(f) => f,
                 Err(e) => {
                     println!("[Sender] Error opening file {:?}: {}", file_path, e);
+                    file_size -= size;
+                    partial_success = true;
                     continue;
                 }
             };
+            
+            let mut current_file_sent: u64 = 0;
             
             loop {
                 // Check for background task messages (e.g. cancellation)
@@ -296,6 +334,9 @@ impl FileSender {
                         total_bytes: file_size,
                         direction: "send".to_string(),
                         status: status_str.to_string(),
+                        current_file_path: Some(rel_path.clone()),
+                        current_file_sent: Some(current_file_sent),
+                        current_file_total: Some(size),
                     });
                     return Err(e);
                 }
@@ -312,6 +353,9 @@ impl FileSender {
                             transfer_id: transfer_id.clone(), file_name: file_name.clone(),
                             bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(),
                             status: match status { crate::TransferStatus::Paused => "paused", crate::TransferStatus::Cancelled => "cancelled", _ => "in_progress" }.to_string(),
+                            current_file_path: Some(rel_path.clone()),
+                            current_file_sent: Some(current_file_sent),
+                            current_file_total: Some(size),
                         });
                         match status {
                             crate::TransferStatus::Cancelled => {
@@ -345,6 +389,9 @@ impl FileSender {
                             let _ = self.app_handle.emit("transfer-progress", TransferProgress {
                                 transfer_id: transfer_id.clone(), file_name: file_name.clone(),
                                 bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: "in_progress".to_string(),
+                                current_file_path: Some(rel_path.clone()),
+                                current_file_sent: Some(current_file_sent),
+                                current_file_total: Some(size),
                             });
                             let _ = Self::write_message(&mut send_stream, &MessageType::TransferResume { transfer_id: transfer_id.clone() }).await;
                             last_status = status;
@@ -352,7 +399,16 @@ impl FileSender {
                     }
                 }
 
-                let n = file.read(&mut buffer).await?;
+                let n = match file.read(&mut buffer).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        println!("[Sender] Error reading file {:?}: {}", file_path, e);
+                        file_size -= size.saturating_sub(current_file_sent);
+                        partial_success = true;
+                        break;
+                    }
+                };
+                
                 if n == 0 {
                     break;
                 }
@@ -374,7 +430,9 @@ impl FileSender {
                     let _ = self.app_handle.emit("transfer-progress", TransferProgress {
                         transfer_id: transfer_id.clone(), file_name: file_name.clone(),
                         bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: status_str.to_string(),
-                    });
+                    
+                    ..Default::default()
+                });
                     return Err(final_err);
                 }
                 if let Err(e) = send_stream.write_all(chunk_data).await {
@@ -384,23 +442,30 @@ impl FileSender {
                     let _ = self.app_handle.emit("transfer-progress", TransferProgress {
                         transfer_id: transfer_id.clone(), file_name: file_name.clone(),
                         bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: status_str.to_string(),
-                    });
+                    
+                    ..Default::default()
+                });
                     return Err(final_err);
                 }
 
                 total_sent += n as u64;
+                current_file_sent += n as u64;
                 chunk_index += 1;
 
                 let _ = self.app_handle.emit("transfer-progress", TransferProgress {
                     transfer_id: transfer_id.clone(), file_name: file_name.clone(),
                     bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: "in_progress".to_string(),
+                    current_file_path: Some(rel_path.clone()),
+                    current_file_sent: Some(current_file_sent),
+                    current_file_total: Some(size),
                 });
             }
         }
 
         // Mark as completed in registry
         let mut registry = transfers.write().await;
-        registry.insert(transfer_id.clone(), crate::TransferStatus::Completed);
+        let final_registry_status = if partial_success { crate::TransferStatus::PartialSuccess } else { crate::TransferStatus::Completed };
+        registry.insert(transfer_id.clone(), final_registry_status);
 
         // 3. Send Completion
         Self::write_message(
@@ -482,7 +547,9 @@ impl FileSender {
                 total_bytes: file_size,
                 direction: "send".to_string(),
                 status: "completed".to_string(),
-            },
+            
+                    ..Default::default()
+                },
         );
         let _ = self.app_handle.emit("history-updated", ());
 

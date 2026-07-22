@@ -83,7 +83,9 @@ impl FileReceiver {
                                     total_bytes: current_file_size,
                                     direction: "receive".to_string(),
                                     status: "failed".to_string(),
-                                });
+                                
+                    ..Default::default()
+                });
                             }
                             return Err(e);
                         }
@@ -173,6 +175,10 @@ impl FileReceiver {
                         }
                         MessageType::DirectoryManifest { transfer_id, files } => {
                             if transfer_id == current_transfer_id {
+                                let _ = self.app_handle.emit("folder-manifest", serde_json::json!({
+                                    "transfer_id": transfer_id,
+                                    "files": files
+                                }));
                                 let base_path = self.save_directory.join(&current_file_name);
                                 for file_entry in files {
                                     // Protect against path traversal again
@@ -263,7 +269,9 @@ impl FileReceiver {
                                             crate::TransferStatus::Cancelled => "cancelled",
                                             _ => "in_progress",
                                         }.to_string(),
-                                    },
+                                    
+                    ..Default::default()
+                },
                                 );
                             }
                         }
@@ -284,7 +292,9 @@ impl FileReceiver {
                                     total_bytes: current_file_size,
                                     direction: "receive".to_string(),
                                     status: "paused".to_string(),
-                                },
+                                
+                    ..Default::default()
+                },
                             );
                         }
                         MessageType::TransferResume { transfer_id: _ } => {
@@ -308,7 +318,9 @@ impl FileReceiver {
                                         crate::TransferStatus::Cancelled => "cancelled",
                                         _ => "in_progress",
                                     }.to_string(),
-                                },
+                                
+                    ..Default::default()
+                },
                             );
                         }
                         MessageType::TransferCancel { transfer_id: _ } => {
@@ -334,7 +346,9 @@ impl FileReceiver {
                                     total_bytes: current_file_size,
                                     direction: "receive".to_string(),
                                     status: "cancelled".to_string(),
-                                },
+                                
+                    ..Default::default()
+                },
                             );
                             let _ = self.app_handle.emit("history-updated", ());
                             return Err("Transfer cancelled by sender".into());
@@ -382,7 +396,9 @@ impl FileReceiver {
                                         total_bytes: current_file_size,
                                         direction: "receive".to_string(),
                                         status: "completed".to_string(),
-                                    },
+                                    
+                    ..Default::default()
+                },
                                 );
 
                             println!("[Transfer] Sending TransferCompleteAck...");
@@ -482,6 +498,7 @@ impl FileReceiver {
                                         crate::TransferStatus::Paused => "paused",
                                         crate::TransferStatus::Cancelled => "cancelled",
                                         crate::TransferStatus::Completed => "completed",
+                                        crate::TransferStatus::PartialSuccess => "partial_success",
                                         crate::TransferStatus::Failed => "failed",
                                     };
                                     let _ = db.update_transfer_status(&current_transfer_id, status_str, bytes_received as i64).await;
@@ -544,7 +561,9 @@ impl FileReceiver {
                                             total_bytes: current_file_size,
                                             direction: "receive".to_string(),
                                             status: "cancelled".to_string(),
-                                        },
+                                        
+                    ..Default::default()
+                },
                                     );
                                     // Give sender time to read the message before closing socket
                                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -584,7 +603,9 @@ impl FileReceiver {
                                         crate::TransferStatus::Cancelled => "cancelled",
                                         _ => "in_progress",
                                     }.to_string(),
-                                },
+                                
+                    ..Default::default()
+                },
                             );
                             last_status = status;
                         }

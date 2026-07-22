@@ -15,10 +15,15 @@ export interface Transfer {
     | "completed"
     | "failed"
     | "paused"
-    | "cancelled";
+    | "cancelled"
+    | "partial_success";
   direction: "send" | "receive";
   filePath?: string;
   speed?: number;
+  currentFilePath?: string;
+  currentFileSent?: number;
+  currentFileTotal?: number;
+  folderManifest?: { relative_path: string; size: number }[];
 }
 
 export interface TransferProgress {
@@ -28,6 +33,9 @@ export interface TransferProgress {
   total_bytes: number;
   direction: string;
   status: string;
+  current_file_path?: string;
+  current_file_sent?: number;
+  current_file_total?: number;
 }
 
 export interface TransferRecord {
@@ -73,20 +81,24 @@ export function useFileTransfer() {
 
         const transfer: Transfer = {
           id: progress.transfer_id,
-          deviceId: "",
+          deviceId: existing ? existing.deviceId : "",
           fileName: progress.file_name,
           totalBytes: progress.total_bytes,
           bytesTransferred: progress.bytes_sent,
           progress: percent,
           status: progress.status as any,
           direction: progress.direction as "send" | "receive",
+          currentFilePath: progress.current_file_path,
+          currentFileSent: progress.current_file_sent,
+          currentFileTotal: progress.current_file_total,
+          folderManifest: existing?.folderManifest,
         };
 
         activeTransfers.value.set(progress.transfer_id, transfer);
         transfers.value = Array.from(activeTransfers.value.values());
 
         // Remove completed or failed transfers after a delay
-        if (percent >= 100 || progress.status === "cancelled" || progress.status === "failed") {
+        if (percent >= 100 || progress.status === "cancelled" || progress.status === "failed" || progress.status === "partial_success") {
           setTimeout(() => {
             activeTransfers.value.delete(progress.transfer_id);
             transfers.value = Array.from(activeTransfers.value.values());
@@ -94,6 +106,30 @@ export function useFileTransfer() {
         }
       }
     );
+    
+    await listen<{ transfer_id: string; files: { relative_path: string; size: number }[] }>("folder-manifest", (event) => {
+        const { transfer_id, files } = event.payload;
+        const transfer = activeTransfers.value.get(transfer_id);
+        if (transfer) {
+            transfer.folderManifest = files;
+            transfers.value = Array.from(activeTransfers.value.values());
+        } else {
+            // It might be possible that we receive folder-manifest before transfer-progress
+            // We should ideally create a dummy transfer if not exists, or wait for the first progress
+            activeTransfers.value.set(transfer_id, {
+                id: transfer_id,
+                deviceId: "",
+                fileName: "",
+                totalBytes: 0,
+                bytesTransferred: 0,
+                progress: 0,
+                status: "pending",
+                direction: "send", // We don't know yet, but progress will fix it
+                folderManifest: files,
+            });
+            transfers.value = Array.from(activeTransfers.value.values());
+        }
+    });
   };
 
   // Auto-setup listener
