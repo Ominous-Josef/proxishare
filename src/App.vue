@@ -7,15 +7,15 @@ import DeviceList from "./components/DeviceList.vue";
 import FileTransfer from "./components/FileTransfer.vue";
 import NetworkDiagnostics from "./components/NetworkDiagnostics.vue";
 import PairingDialog from "./components/PairingDialog.vue";
-import SyncSettings from "./components/SyncSettings.vue";
+import SettingsView from "./components/SettingsView.vue";
 import TransferHistory from "./components/TransferHistory.vue";
 import FileAcceptDialog from "./components/FileAcceptDialog.vue";
 import { useDevices, type Device } from "./composables/useDevices";
-import { Share2, History, HelpCircle, Upload, Download, X, Laptop } from "lucide-vue-next";
+import { Share2, History, Settings, HelpCircle, Upload, Download, X, Laptop } from "lucide-vue-next";
 
-const { devices, isDiscovering, refreshDevices } = useDevices();
+const { devices, isDiscovering, refreshDevices, triggerScan } = useDevices();
 const selectedId = ref<string | null>(null);
-const currentView = ref<"devices" | "history" | "support">("devices");
+const currentView = ref<"devices" | "history" | "settings">("devices");
 
 const pairingRequest = ref<{
   device: Device;
@@ -238,17 +238,17 @@ onMounted(async () => {
           <div v-if="currentView === 'history'" class="absolute inset-y-2 -left-4 w-1 bg-primary rounded-r-full"></div>
         </button>
 
-        <!-- Support -->
+        <!-- Settings -->
         <button
-          @click="currentView = 'support'"
+          @click="currentView = 'settings'"
           :class="[
             'relative p-3 rounded-xl flex items-center justify-center group transition-colors',
-            currentView === 'support' ? 'bg-primary/10 text-primary' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50'
+            currentView === 'settings' ? 'bg-primary/10 text-primary' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50'
           ]"
-          title="Support"
+          title="Settings"
         >
-          <HelpCircle class="w-6 h-6 stroke-[1.5]" :class="currentView === 'support' ? 'stroke-2' : ''" />
-          <div v-if="currentView === 'support'" class="absolute inset-y-2 -left-4 w-1 bg-primary rounded-r-full"></div>
+          <Settings class="w-6 h-6 stroke-[1.5]" :class="currentView === 'settings' ? 'stroke-2' : ''" />
+          <div v-if="currentView === 'settings'" class="absolute inset-y-2 -left-4 w-1 bg-primary rounded-r-full"></div>
         </button>
       </div>
     </nav>
@@ -277,13 +277,13 @@ onMounted(async () => {
 
             <!-- Device List -->
             <div class="w-full">
-              <SyncSettings class="mb-4" />
               <DeviceList
                 :devices="devices"
                 :selected-id="selectedId"
                 :is-discovering="isDiscovering"
                 @select="handleSelect"
                 @pair="handlePair"
+                @scan="triggerScan"
               />
             </div>
           </div>
@@ -296,13 +296,9 @@ onMounted(async () => {
           </div>
         </template>
 
-        <template v-else-if="currentView === 'support'">
-          <div class="w-full max-w-[600px] mt-4 flex flex-col gap-6">
-            <h2 class="text-headline-lg font-headline-lg text-on-surface tracking-tight">Support & Diagnostics</h2>
-            <button class="w-full py-3 rounded-xl bg-primary text-on-primary font-semibold hover:opacity-90 transition-opacity" @click="handleReportIssue">
-              Report an Issue on GitHub
-            </button>
-            <NetworkDiagnostics />
+        <template v-else-if="currentView === 'settings'">
+          <div class="w-full flex justify-center pt-8">
+            <SettingsView />
           </div>
         </template>
 

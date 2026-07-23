@@ -63,10 +63,18 @@ export function useDevices() {
     }
   };
 
+  const triggerScan = async () => {
+    isDiscovering.value = true;
+    await startDiscovery();
+    setTimeout(() => {
+      isDiscovering.value = false;
+    }, 5000);
+  };
+
   onMounted(() => {
     startDiscovery();
-    // Poll every 3 seconds for updates
-    pollInterval = window.setInterval(fetchDevices, 3000);
+    // Poll every 15 seconds for updates in the background instead of aggressively every 3s
+    pollInterval = window.setInterval(fetchDevices, 15000);
   });
 
   onUnmounted(() => {
@@ -80,6 +88,7 @@ export function useDevices() {
     isDiscovering,
     error,
     refreshDevices: fetchDevices,
+    triggerScan,
     testConnectivity,
     findReachableIp,
   };
