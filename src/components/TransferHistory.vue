@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { listen } from "@tauri-apps/api/event";
 import { 
-  ClockIcon, 
-  FileIcon, 
-  RefreshCwIcon, 
-  CheckCircleIcon, 
-  XCircleIcon, 
-  AlertTriangleIcon, 
-  PauseCircleIcon, 
-  CircleIcon 
+  Clock, 
+  File, 
+  RefreshCw, 
+  CheckCircle2, 
+  XCircle, 
+  AlertTriangle, 
+  PauseCircle, 
+  Circle,
+  Trash2,
+  Upload,
+  Download
 } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
@@ -51,7 +54,6 @@ const loadData = async () => {
 onMounted(async () => {
   await loadData();
 
-  // Listen for history updates to refresh list
   const unlisten = await listen("history-updated", async () => {
     console.log("[TransferHistory] Refreshing history...");
     await loadData();
@@ -66,12 +68,10 @@ const formatDate = (timestamp: number) => {
   const dt = DateTime.fromSeconds(timestamp);
   const now = DateTime.now();
 
-  // If older than 3 days, show the full date
   if (now.diff(dt, "days").days > 3) {
     return dt.toLocaleString(DateTime.DATE_MED);
   }
   
-  // Otherwise, use Luxon's built-in relative formatting (e.g. "3 hours ago", "2 days ago")
   return dt.toRelative() || dt.toLocaleString(DateTime.DATE_MED);
 };
 
@@ -83,40 +83,6 @@ const formatBytes = (bytes: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 };
 
-const getStatusClass = (status: string) => {
-  switch (status) {
-    case "completed":
-      return "status-completed";
-    case "failed":
-      return "status-failed";
-    case "cancelled":
-      return "status-failed";
-    case "in_progress":
-      return "status-progress";
-    case "paused":
-      return "status-progress";
-    default:
-      return "status-pending";
-  }
-};
-
-const getStatusIcon = (status: string) => {
-  switch (status) {
-    case "completed":
-      return CheckCircleIcon;
-    case "failed":
-      return XCircleIcon;
-    case "cancelled":
-      return AlertTriangleIcon;
-    case "in_progress":
-      return RefreshCwIcon;
-    case "paused":
-      return PauseCircleIcon;
-    default:
-      return CircleIcon;
-  }
-};
-
 const handleClearHistory = async () => {
   await clearHistory();
   deviceHistory.value = [];
@@ -125,396 +91,118 @@ const handleClearHistory = async () => {
 </script>
 
 <template>
-  <div class="history-container">
-    <div class="history-header">
-      <h3>
-        <ClockIcon :size="18" />
-        {{
-          deviceId
-            ? `History with ${deviceName || "Device"}`
-            : "Transfer History"
-        }}
+  <div class="w-full glass-panel rounded-2xl flex flex-col overflow-hidden select-none">
+    
+    <!-- Header -->
+    <div class="flex justify-between items-center px-6 py-4 border-b border-white/5 bg-surface-container/50">
+      <h3 class="flex items-center gap-2 text-body-md font-medium text-on-surface">
+        <Clock class="w-4 h-4 text-on-surface-variant" />
+        {{ deviceId ? `History with ${deviceName || "Device"}` : "All Transfer History" }}
       </h3>
-      <div class="header-actions">
+      <div class="flex items-center gap-2">
         <button
-          class="icon-btn"
+          class="p-2 rounded-lg bg-surface-container hover:bg-surface-variant text-on-surface-variant hover:text-on-surface border border-white/5 transition-colors disabled:opacity-50"
           @click="loadData"
           :disabled="isLoading"
           title="Refresh"
         >
-          <RefreshCwIcon :size="16" :class="{ spinning: isLoading }" />
+          <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': isLoading }" />
         </button>
         <button
           v-if="displayHistory.length > 0 && !deviceId"
-          class="icon-btn danger"
+          class="p-2 rounded-lg bg-surface-container hover:bg-error-container/20 text-on-surface-variant hover:text-error border border-white/5 transition-colors"
           @click="showClearConfirm = true"
           title="Clear history"
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path
-              d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-            ></path>
-          </svg>
+          <Trash2 class="w-4 h-4" />
         </button>
       </div>
     </div>
 
-    <!-- Clear confirmation modal -->
-    <div
-      v-if="showClearConfirm"
-      class="confirm-overlay"
-      @click.self="showClearConfirm = false"
-    >
-      <div class="confirm-modal">
-        <p>Clear all transfer history?</p>
-        <div class="confirm-actions">
-          <button class="btn-secondary" @click="showClearConfirm = false">
-            Cancel
-          </button>
-          <button class="btn-danger" @click="handleClearHistory">Clear</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="isLoading" class="loading-state">
-      <div class="spinner"></div>
-      <span>Loading history...</span>
-    </div>
-
-    <div v-else-if="displayHistory.length === 0" class="empty-state">
-      <FileIcon :size="28" />
-      <p>No transfers yet</p>
-    </div>
-
-    <div v-else class="history-list">
-      <div
-        v-for="record in displayHistory"
-        :key="record.id"
-        class="history-item"
-      >
-        <div class="item-icon" :class="record.direction">
-          <svg
-            v-if="record.direction === 'send'"
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-          </svg>
-          <svg
-            v-else
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="7 10 12 15 17 10"></polyline>
-            <line x1="12" y1="15" x2="12" y2="3"></line>
-          </svg>
-        </div>
-
-        <div class="item-details">
-          <div class="file-name">{{ record.file_name }}</div>
-          <div class="file-meta">
-            <span class="size">{{ formatBytes(record.total_size) }}</span>
-            <span class="separator">•</span>
-            <span class="date">{{ formatDate(record.created_at) }}</span>
+    <!-- Clear Confirmation Modal -->
+    <Transition name="fade">
+      <div v-if="showClearConfirm" class="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click.self="showClearConfirm = false">
+        <div class="bg-surface-container-high rounded-xl p-6 border border-white/10 shadow-2xl text-center max-w-sm w-full mx-4">
+          <p class="text-on-surface mb-6 font-medium">Clear all transfer history?</p>
+          <div class="flex gap-3 justify-center">
+            <button class="px-4 py-2 rounded-lg bg-surface-container border border-outline-variant/30 text-on-surface-variant hover:bg-surface-variant transition-colors" @click="showClearConfirm = false">
+              Cancel
+            </button>
+            <button class="px-4 py-2 rounded-lg bg-danger text-white hover:bg-danger/90 transition-colors font-medium" @click="handleClearHistory">
+              Clear All
+            </button>
           </div>
         </div>
+      </div>
+    </Transition>
 
-        <div class="item-status" :class="getStatusClass(record.status)">
-          <component 
-            :is="getStatusIcon(record.status)" 
-            :size="16" 
-            :class="{ spinning: record.status === 'in_progress' }" 
-          />
+    <!-- Content -->
+    <div class="flex-1 min-h-[300px] max-h-[500px] overflow-y-auto">
+      
+      <!-- Loading -->
+      <div v-if="isLoading" class="h-full flex flex-col items-center justify-center text-on-surface-variant/60 gap-4 py-12">
+        <div class="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin"></div>
+        <span class="text-sm">Loading history...</span>
+      </div>
+
+      <!-- Empty -->
+      <div v-else-if="displayHistory.length === 0" class="h-full flex flex-col items-center justify-center text-on-surface-variant/50 gap-3 py-16">
+        <File class="w-10 h-10 opacity-50" />
+        <p class="text-sm">No transfers yet</p>
+      </div>
+
+      <!-- List -->
+      <div v-else class="flex flex-col">
+        <div
+          v-for="record in displayHistory"
+          :key="record.id"
+          class="flex items-center gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/5 transition-colors group"
+        >
+          <!-- Direction Icon -->
+          <div class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" :class="record.direction === 'send' ? 'bg-primary/10 text-primary' : 'bg-secondary/10 text-secondary'">
+            <Upload v-if="record.direction === 'send'" class="w-5 h-5" />
+            <Download v-else class="w-5 h-5" />
+          </div>
+
+          <!-- Details -->
+          <div class="flex-1 min-w-0 flex flex-col justify-center">
+            <div class="text-body-md font-medium text-on-surface truncate">{{ record.file_name }}</div>
+            <div class="flex items-center gap-2 text-xs text-on-surface-variant/70 mt-1">
+              <span class="font-medium text-on-surface-variant">{{ formatBytes(record.total_size) }}</span>
+              <span class="w-1 h-1 rounded-full bg-outline-variant/50"></span>
+              <span>{{ formatDate(record.created_at) }}</span>
+            </div>
+          </div>
+
+          <!-- Status Icon -->
+          <div class="shrink-0 flex items-center justify-center w-8 h-8 rounded-full" 
+            :class="{
+              'text-success bg-success/10': record.status === 'completed',
+              'text-danger bg-danger/10': record.status === 'failed' || record.status === 'cancelled',
+              'text-accent-orange bg-accent-orange/10': record.status === 'in_progress' || record.status === 'paused',
+              'text-on-surface-variant bg-white/5': !['completed','failed','cancelled','in_progress','paused'].includes(record.status)
+            }">
+            <CheckCircle2 v-if="record.status === 'completed'" class="w-4 h-4" />
+            <XCircle v-else-if="record.status === 'failed'" class="w-4 h-4" />
+            <AlertTriangle v-else-if="record.status === 'cancelled'" class="w-4 h-4" />
+            <RefreshCw v-else-if="record.status === 'in_progress'" class="w-4 h-4 animate-spin" />
+            <PauseCircle v-else-if="record.status === 'paused'" class="w-4 h-4" />
+            <Circle v-else class="w-4 h-4" />
+          </div>
         </div>
       </div>
+      
     </div>
   </div>
 </template>
 
 <style scoped>
-.history-container {
-  background: linear-gradient(
-    135deg,
-    rgba(30, 35, 45, 0.95),
-    rgba(20, 25, 35, 0.98)
-  );
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  overflow: hidden;
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
 }
-
-.history-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.history-header h3 {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0;
-  font-size: 14px;
-  font-weight: 500;
-  color: #e0e0e0;
-}
-
-.header-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.icon-btn {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  padding: 6px;
-  cursor: pointer;
-  color: #a0a0a0;
-  transition: all 0.2s ease;
-}
-
-.icon-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #e0e0e0;
-}
-
-.icon-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.icon-btn.danger:hover {
-  background: rgba(239, 68, 68, 0.2);
-  border-color: rgba(239, 68, 68, 0.3);
-  color: #ef4444;
-}
-
-.spinning {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.loading-state,
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 40px 20px;
-  color: #666;
-  gap: 12px;
-}
-
-.empty-state p {
-  margin: 0;
-  font-size: 12px;
-  max-width: unset;
-}
-
-.spinner {
-  width: 24px;
-  height: 24px;
-  border: 2px solid rgba(255, 255, 255, 0.1);
-  border-top-color: #6366f1;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-.history-list {
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.history-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 20px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  transition: background 0.2s ease;
-}
-
-.history-item:hover {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.history-item:last-child {
-  border-bottom: none;
-}
-
-.item-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.item-icon.send {
-  background: rgba(99, 102, 241, 0.15);
-  color: #818cf8;
-}
-
-.item-icon.receive {
-  background: rgba(34, 197, 94, 0.15);
-  color: #4ade80;
-}
-
-.item-details {
-  flex: 1;
-  min-width: 0;
-}
-
-.file-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: #e0e0e0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.file-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: #666;
-  margin-top: 2px;
-}
-
-.separator {
-  color: #444;
-}
-
-.item-status {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  flex-shrink: 0;
-}
-
-.status-completed {
-  background: rgba(34, 197, 94, 0.15);
-  color: #4ade80;
-}
-
-.status-failed {
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
-}
-
-.status-progress {
-  background: rgba(234, 179, 8, 0.15);
-  color: #facc15;
-}
-
-.status-pending {
-  background: rgba(255, 255, 255, 0.05);
-  color: #666;
-}
-
-.confirm-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.confirm-modal {
-  background: #1e2330;
-  border-radius: 12px;
-  padding: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  text-align: center;
-}
-
-.confirm-modal p {
-  margin: 0 0 20px 0;
-  color: #e0e0e0;
-}
-
-.confirm-actions {
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-}
-
-.btn-secondary {
-  padding: 8px 16px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
-  color: #a0a0a0;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.btn-danger {
-  padding: 8px 16px;
-  border-radius: 8px;
-  border: none;
-  background: #ef4444;
-  color: white;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.btn-danger:hover {
-  background: #dc2626;
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 </style>

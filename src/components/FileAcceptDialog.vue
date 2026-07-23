@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
+import { FileDown, X } from "lucide-vue-next";
 
 const props = defineProps<{
   isOpen: boolean;
@@ -64,35 +65,37 @@ const stopTimer = () => {
 
 <template>
   <Transition name="fade">
-    <div v-if="isOpen" class="modal-overlay">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3>Incoming File</h3>
-        </div>
-        <div class="modal-body">
-          <p><strong>{{ senderName }}</strong> wants to send you a file:</p>
-          <div class="file-details">
-            <div class="file-icon">📄</div>
-            <div class="file-info">
-              <div class="file-name">{{ fileName }}</div>
-              <div class="file-size">{{ formatSize(fileSize) }}</div>
-            </div>
+    <div v-if="isOpen" class="fixed inset-0 z-[100] flex items-center justify-center bg-background/80 backdrop-blur-sm">
+      <div class="glass-modal rounded-2xl w-full max-w-[400px] p-8 relative flex flex-col items-center text-center shadow-2xl border border-white/10 mx-4">
+        
+        <button class="absolute top-4 right-4 text-on-surface-variant hover:text-on-surface transition-colors p-1.5 rounded-md hover:bg-surface-variant/50" @click="emit('reject', transferId)">
+          <X class="w-5 h-5" />
+        </button>
+
+        <h3 class="text-headline-lg font-headline-lg text-on-surface mb-2">Incoming File</h3>
+        <p class="text-body-sm text-on-surface-variant mb-6">
+          <strong class="text-primary">{{ senderName }}</strong> wants to send you a file:
+        </p>
+        
+        <div class="w-full flex items-center gap-4 bg-surface-container-low border border-white/5 p-4 rounded-xl mb-4 text-left shadow-inner">
+          <div class="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center text-primary shrink-0">
+            <FileDown class="w-6 h-6 stroke-[1.5]" />
           </div>
-          <p class="timeout-warning">
-            Auto-rejecting in {{ formatTime(timeLeft) }}
-          </p>
+          <div class="flex flex-col min-w-0">
+            <div class="text-body-md font-semibold text-on-surface truncate">{{ fileName }}</div>
+            <div class="text-xs text-on-surface-variant mt-1">{{ formatSize(fileSize) }}</div>
+          </div>
         </div>
-        <div class="modal-footer actions">
-          <button
-            class="action-btn reject-btn"
-            @click="emit('reject', transferId)"
-          >
+
+        <p class="text-xs text-danger font-medium mb-6">
+          Auto-rejecting in {{ formatTime(timeLeft) }}
+        </p>
+
+        <div class="flex w-full gap-3">
+          <button class="flex-1 py-3 rounded-xl bg-surface-container hover:bg-error-container/20 text-on-surface-variant hover:text-danger transition-colors text-body-md font-medium border border-outline-variant/20" @click="emit('reject', transferId)">
             Decline
           </button>
-          <button
-            class="action-btn accept-btn"
-            @click="emit('accept', transferId)"
-          >
+          <button class="flex-1 py-3 rounded-xl bg-primary hover:bg-primary-fixed-dim text-white transition-all text-body-md font-medium shadow-lg shadow-primary/20" @click="emit('accept', transferId)">
             Accept
           </button>
         </div>
@@ -102,117 +105,9 @@ const stopTimer = () => {
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal-content {
-  background: #131620;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  width: 400px;
-  max-width: 90%;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
-}
-
-.modal-header {
-  padding: 1.5rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.modal-header h3 {
-  margin: 0;
-  color: #f8fafc;
-}
-
-.modal-body {
-  padding: 2rem 1.5rem;
-  color: #94a3b8;
-}
-
-.file-details {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-  background: rgba(255, 255, 255, 0.05);
-  padding: 15px;
-  border-radius: 8px;
-  margin: 1.5rem 0;
-}
-
-.file-icon {
-  font-size: 2rem;
-}
-
-.file-info {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.file-name {
-  font-weight: 600;
-  color: #f8fafc;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.file-size {
-  font-size: 0.85rem;
-  margin-top: 4px;
-}
-
-.timeout-warning {
-  font-size: 0.85rem;
-  color: #ef4444;
-  text-align: center;
-}
-
-.actions {
-  display: flex;
-  gap: 10px;
-  padding: 1.5rem;
-}
-
-.action-btn {
-  flex: 1;
-  padding: 12px;
-  border-radius: 8px;
-  font-weight: 600;
-  cursor: pointer;
-  border: none;
-  transition: opacity 0.2s;
-}
-
-.action-btn:hover {
-  opacity: 0.9;
-}
-
-.reject-btn {
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #f8fafc;
-}
-
-.accept-btn {
-  background: #6366f1;
-  color: white;
-}
-
 .fade-enter-active,
 .fade-leave-active {
-  transition: opacity 0.3s;
+  transition: opacity 0.2s ease;
 }
 .fade-enter-from,
 .fade-leave-to {
