@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useFileTransfer } from "../composables/useFileTransfer";
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { CloudUpload, FolderUp, MonitorSmartphone, Laptop, FileUp, X, Upload, Pause, Play } from "lucide-vue-next";
+import { CloudUpload, FolderUp, MonitorSmartphone, Laptop, FileUp, X, Upload, Pause, Play, PackageOpen } from "lucide-vue-next";
 
 const props = defineProps<{
   deviceId: string | null;
@@ -24,6 +24,19 @@ const activeDeviceTransfers = computed(() => {
 const currentTransfer = computed(() => {
   return activeDeviceTransfers.value[0] || null;
 });
+
+const formatSpeed = (bytesPerSec?: number) => {
+  if (!bytesPerSec || bytesPerSec <= 0) return "-- MB/s";
+  return (bytesPerSec / 1024 / 1024).toFixed(1) + " MB/s";
+};
+
+const formatTime = (secs?: number) => {
+  if (!secs || !isFinite(secs) || secs <= 0) return "--";
+  if (secs < 60) return Math.ceil(secs) + "s";
+  const m = Math.floor(secs / 60);
+  const s = Math.ceil(secs % 60);
+  return `${m}m ${s}s`;
+};
 
 const selectAndSend = async (isFolder: boolean = false) => {
   if (!props.deviceId || !props.targetIp || !props.targetPort) {
@@ -156,33 +169,45 @@ onUnmounted(() => {
       </div>
 
       <!-- Dropzone Instructions -->
-      <div class="mt-6 flex flex-col items-center z-20">
-         <p class="font-body-md text-on-surface-variant font-medium text-center">
-            <span v-if="isDragOver" class="text-primary font-bold">Drop files to send to {{ targetName || 'device' }}!</span>
-            <span v-else>Drag & drop files here to send</span>
-         </p>
-         
-         <!-- Manual Send Buttons -->
-         <div class="flex gap-3 mt-4">
-            <button 
-              @click="selectAndSend(false)" 
-              :disabled="!deviceId"
-              class="px-5 py-2 rounded-full font-body-sm font-semibold flex items-center gap-2 transition-all duration-300"
-              :class="deviceId ? 'bg-primary/20 text-primary hover:bg-primary/30 active:scale-95' : 'bg-surface-variant text-on-surface-variant opacity-50 cursor-not-allowed'"
-            >
-              <Upload class="w-4 h-4" />
-              Send File
-            </button>
-            <button 
-              @click="selectAndSend(true)" 
-              :disabled="!deviceId"
-              class="px-5 py-2 rounded-full font-body-sm font-semibold flex items-center gap-2 transition-all duration-300 border border-outline-variant/30"
-              :class="deviceId ? 'bg-surface-container-low text-on-surface hover:bg-surface-bright active:scale-95' : 'bg-surface-variant/20 text-on-surface-variant opacity-50 cursor-not-allowed'"
-            >
-              <FolderUp class="w-4 h-4" />
-              Send Folder
-            </button>
-         </div>
+      <div class="mt-6 flex flex-col items-center z-20 min-h-[100px] justify-center">
+         <Transition name="fade" mode="out-in">
+           <div v-if="isDragOver" class="flex flex-col items-center gap-2 animate-bounce">
+             <div class="bg-primary/20 p-3 rounded-full text-primary">
+               <PackageOpen class="w-8 h-8" />
+             </div>
+             <p class="font-body-md text-primary font-bold text-center">
+                Drop to send to {{ targetName || 'device' }}
+             </p>
+           </div>
+           
+           <div v-else class="flex flex-col items-center">
+             <p class="font-body-md text-on-surface-variant font-medium text-center">
+                Drag & drop files here to send
+             </p>
+             
+             <!-- Manual Send Buttons -->
+             <div class="flex gap-3 mt-4">
+                <button 
+                  @click="selectAndSend(false)" 
+                  :disabled="!deviceId"
+                  class="px-5 py-2 rounded-full font-body-sm font-semibold flex items-center gap-2 transition-all duration-300"
+                  :class="deviceId ? 'bg-primary/20 text-primary hover:bg-primary/30 active:scale-95' : 'bg-surface-variant text-on-surface-variant opacity-50 cursor-not-allowed'"
+                >
+                  <Upload class="w-4 h-4" />
+                  Send File
+                </button>
+                <button 
+                  @click="selectAndSend(true)" 
+                  :disabled="!deviceId"
+                  class="px-5 py-2 rounded-full font-body-sm font-semibold flex items-center gap-2 transition-all duration-300 border border-outline-variant/30"
+                  :class="deviceId ? 'bg-surface-container-low text-on-surface hover:bg-surface-bright active:scale-95' : 'bg-surface-variant/20 text-on-surface-variant opacity-50 cursor-not-allowed'"
+                >
+                  <FolderUp class="w-4 h-4" />
+                  Send Folder
+                </button>
+             </div>
+           </div>
+         </Transition>
       </div>
     </div>
 
@@ -207,6 +232,11 @@ onUnmounted(() => {
                 <span class="text-xs text-on-surface-variant mt-0.5">
                    {{ transfer.status === 'paused' ? 'Paused' : 'Transferring' }} • {{ (transfer.bytesTransferred / 1024 / 1024).toFixed(1) }} MB of {{ (transfer.totalBytes / 1024 / 1024).toFixed(1) }} MB
                 </span>
+                <div v-if="transfer.status === 'in_progress'" class="flex gap-2 text-[10px] text-on-surface-variant/80 mt-1 uppercase tracking-wider font-semibold">
+                   <span>{{ formatSpeed(transfer.speed) }}</span>
+                   <span v-if="transfer.timeRemaining && transfer.timeRemaining > 0">•</span>
+                   <span v-if="transfer.timeRemaining && transfer.timeRemaining > 0">{{ formatTime(transfer.timeRemaining) }} left</span>
+                </div>
               </div>
             </div>
             

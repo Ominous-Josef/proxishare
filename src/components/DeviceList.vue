@@ -90,10 +90,20 @@ const savedDevices = computed(() => {
           
           <!-- Info -->
           <div class="flex-1 min-w-0 z-10 flex flex-col justify-center">
-            <h4 class="text-body-lg font-bold text-on-surface truncate" :title="device.name">{{ device.name }}</h4>
-            <div class="mt-1 w-full">
-              <span class="font-body-sm text-on-surface-variant truncate block w-full" :title="device.ip + ' • ' + formatLastSeen(device.last_seen)">
-                {{ device.ip }} • {{ formatLastSeen(device.last_seen) }}
+            <div class="flex items-center gap-2">
+              <h4 class="text-body-lg font-bold text-on-surface truncate" :title="device.name">{{ device.name }}</h4>
+              <span v-if="device.name.toLowerCase().includes('mac')" class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-surface-variant text-on-surface-variant border border-white/10 shrink-0">macOS</span>
+              <span v-else-if="device.name.toLowerCase().includes('windows') || device.name.toLowerCase().includes('pc')" class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-surface-variant text-on-surface-variant border border-white/10 shrink-0">Windows</span>
+              <span v-else-if="device.name.toLowerCase().includes('iphone') || device.name.toLowerCase().includes('ipad')" class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-surface-variant text-on-surface-variant border border-white/10 shrink-0">iOS</span>
+              <span v-else-if="device.name.toLowerCase().includes('android')" class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-surface-variant text-on-surface-variant border border-white/10 shrink-0">Android</span>
+            </div>
+            <div class="mt-1 w-full flex items-center gap-2">
+              <span class="font-body-sm text-on-surface-variant truncate" :title="device.ip">
+                {{ device.ip }}
+              </span>
+              <span class="w-1 h-1 rounded-full bg-surface-variant shrink-0"></span>
+              <span class="font-body-sm text-on-surface-variant shrink-0">
+                {{ formatLastSeen(device.last_seen) }}
               </span>
             </div>
           </div>

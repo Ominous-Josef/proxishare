@@ -10,7 +10,7 @@ import SettingsView from "./components/SettingsView.vue";
 import TransferHistory from "./components/TransferHistory.vue";
 import FileAcceptDialog from "./components/FileAcceptDialog.vue";
 import { useDevices, type Device } from "./composables/useDevices";
-import { Share2, History, Settings, Upload, Download, X, Laptop } from "lucide-vue-next";
+import { Share2, History, Settings, Upload, Download, X, Laptop, Radar } from "lucide-vue-next";
 
 const { devices, isDiscovering, refreshDevices, triggerScan } = useDevices();
 const selectedId = ref<string | null>(null);
@@ -263,12 +263,24 @@ onMounted(async () => {
               :target-port="selectedDevice.port"
             />
             <div v-else class="w-full h-[320px] glass-panel rounded-3xl flex flex-col items-center justify-center p-6 drop-zone-glow group relative overflow-hidden shrink-0 border border-white/5 shadow-2xl">
-               <div class="absolute inset-0 bg-gradient-to-tr from-primary/5 via-transparent to-secondary/5 opacity-50 transition-opacity duration-300"></div>
-               <div class="bg-surface-container/60 rounded-full p-6 mb-6 shadow-inner border border-white/5 text-primary/80">
-                  <Laptop class="w-14 h-14 stroke-[1.5]" />
-               </div>
-               <h2 class="text-headline-md font-headline-md text-on-surface mb-2 tracking-tight">Select a device to share</h2>
-               <p class="text-body-md font-body-md text-on-surface-variant">Choose a nearby device below to start dropping files</p>
+              <div class="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-50"></div>
+              
+              <div class="relative w-24 h-24 mb-6 flex items-center justify-center">
+                 <!-- Radar rings -->
+                 <div v-if="isDiscovering" class="absolute inset-0 rounded-full border border-primary/40 animate-ping" style="animation-duration: 3s;"></div>
+                 <div v-if="isDiscovering" class="absolute inset-0 rounded-full border border-primary/20 animate-ping" style="animation-duration: 3s; animation-delay: 1s;"></div>
+                 <div class="w-16 h-16 rounded-full bg-surface-container-high/50 flex items-center justify-center border border-white/10 relative z-10 shadow-[0_0_30px_theme('colors.primary')]/20">
+                    <Laptop v-if="!isDiscovering" class="w-8 h-8 text-primary/60 group-hover:scale-110 transition-transform duration-500" stroke-width="1.5" />
+                    <Radar v-else class="w-8 h-8 text-primary/80 animate-spin" stroke-width="1.5" style="animation-duration: 4s;" />
+                 </div>
+              </div>
+
+              <h2 class="font-headline-sm text-headline-sm text-on-surface mb-2 tracking-tight">
+                {{ isDiscovering ? 'Scanning Network' : 'Ready to Share' }}
+              </h2>
+               <p class="text-body-md font-body-md text-on-surface-variant text-center max-w-sm">
+                 {{ isDiscovering ? 'Looking for nearby ProxiShare devices...' : 'Choose a nearby device below to start dropping files' }}
+               </p>
             </div>
 
             <!-- Device List -->

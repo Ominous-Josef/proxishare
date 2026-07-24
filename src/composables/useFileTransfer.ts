@@ -20,6 +20,9 @@ export interface Transfer {
   direction: "send" | "receive";
   filePath?: string;
   speed?: number;
+  timeRemaining?: number;
+  lastUpdateTime?: number;
+  lastBytesSent?: number;
   currentFilePath?: string;
   currentFileSent?: number;
   currentFileTotal?: number;
@@ -79,6 +82,26 @@ export function useFileTransfer() {
           return;
         }
 
+        const now = Date.now();
+        let speed = 0;
+        let timeRemaining = 0;
+
+        if (existing && existing.lastUpdateTime && progress.status === 'in_progress') {
+          const timeDiff = (now - existing.lastUpdateTime) / 1000;
+          const bytesDiff = progress.bytes_sent - (existing.lastBytesSent || 0);
+          
+          if (timeDiff > 0 && bytesDiff >= 0) {
+            const currentSpeed = bytesDiff / timeDiff;
+            speed = existing.speed ? (existing.speed * 0.7) + (currentSpeed * 0.3) : currentSpeed;
+          } else {
+            speed = existing.speed || 0;
+          }
+        }
+
+        if (speed > 0 && progress.total_bytes > progress.bytes_sent) {
+          timeRemaining = (progress.total_bytes - progress.bytes_sent) / speed;
+        }
+
         const transfer: Transfer = {
           id: progress.transfer_id,
           deviceId: (progress as any).device_id || (existing ? existing.deviceId : ""),
@@ -92,6 +115,10 @@ export function useFileTransfer() {
           currentFileSent: progress.current_file_sent,
           currentFileTotal: progress.current_file_total,
           folderManifest: existing?.folderManifest,
+          speed,
+          timeRemaining,
+          lastUpdateTime: now,
+          lastBytesSent: progress.bytes_sent,
         };
 
         activeTransfers.value.set(progress.transfer_id, transfer);
