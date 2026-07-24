@@ -81,7 +81,7 @@ export function useFileTransfer() {
 
         const transfer: Transfer = {
           id: progress.transfer_id,
-          deviceId: existing ? existing.deviceId : "",
+          deviceId: (progress as any).device_id || (existing ? existing.deviceId : ""),
           fileName: progress.file_name,
           totalBytes: progress.total_bytes,
           bytesTransferred: progress.bytes_sent,
