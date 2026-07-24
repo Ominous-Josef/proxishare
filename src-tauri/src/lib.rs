@@ -43,10 +43,11 @@ pub struct AppState {
 
 #[tauri::command]
 async fn start_discovery(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    // The actual start_broadcasting and start_discovery background loops are already 
+    // initialized in the setup hook. This command just triggers a fresh manual scan.
     let discovery_lock = state.discovery.read().await;
     if let Some(discovery) = &*discovery_lock {
-        discovery.start_broadcasting().map_err(|e| e.to_string())?;
-        discovery.start_discovery().map_err(|e| e.to_string())?;
+        discovery.trigger_scan();
         Ok(true)
     } else {
         Ok(false)

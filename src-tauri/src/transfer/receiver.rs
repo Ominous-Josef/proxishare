@@ -52,6 +52,7 @@ impl FileReceiver {
         let mut file: Option<File> = None;
         let mut bytes_received: u64 = 0;
         let mut current_transfer_id = String::new();
+        let mut current_device_id = String::new();
         let mut current_file_name = String::new();
         let mut current_file_size: u64 = 0;
         let mut last_status = crate::TransferStatus::InProgress;
@@ -78,6 +79,7 @@ impl FileReceiver {
 
                                 let _ = self.app_handle.emit("transfer-progress", TransferProgress {
                                     transfer_id: current_transfer_id.clone(),
+device_id: current_device_id.clone(),
                                     file_name: current_file_name.clone(),
                                     bytes_sent: bytes_received,
                                     total_bytes: current_file_size,
@@ -129,6 +131,7 @@ impl FileReceiver {
                             }
 
                             current_transfer_id = transfer_id.clone();
+                            current_device_id = sender_id.clone();
                             current_file_name = file_name.to_string();
                             current_file_size = metadata.size;
                             is_dir = metadata.is_dir.unwrap_or(false);
@@ -260,6 +263,7 @@ impl FileReceiver {
                                     "transfer-progress",
                                     TransferProgress {
                                         transfer_id: current_transfer_id.clone(),
+device_id: current_device_id.clone(),
                                         file_name: current_file_name.clone(),
                                         bytes_sent: bytes_received,
                                         total_bytes: current_file_size,
@@ -287,6 +291,7 @@ impl FileReceiver {
                                 "transfer-progress",
                                 TransferProgress {
                                     transfer_id: current_transfer_id.clone(),
+device_id: current_device_id.clone(),
                                     file_name: current_file_name.clone(),
                                     bytes_sent: bytes_received,
                                     total_bytes: current_file_size,
@@ -309,6 +314,7 @@ impl FileReceiver {
                                 "transfer-progress",
                                 TransferProgress {
                                     transfer_id: current_transfer_id.clone(),
+device_id: current_device_id.clone(),
                                     file_name: current_file_name.clone(),
                                     bytes_sent: bytes_received,
                                     total_bytes: current_file_size,
@@ -341,6 +347,7 @@ impl FileReceiver {
                                 "transfer-progress",
                                 TransferProgress {
                                     transfer_id: current_transfer_id.clone(),
+device_id: current_device_id.clone(),
                                     file_name: current_file_name.clone(),
                                     bytes_sent: bytes_received,
                                     total_bytes: current_file_size,
@@ -390,7 +397,7 @@ impl FileReceiver {
                                 let _ = self.app_handle.emit(
                                     "transfer-progress",
                                     TransferProgress {
-                                        transfer_id: transfer_id.clone(),
+                                        transfer_id: transfer_id.clone(), device_id: current_device_id.clone(),
                                         file_name: current_file_name.clone(),
                                         bytes_sent: current_file_size,
                                         total_bytes: current_file_size,
@@ -556,6 +563,7 @@ impl FileReceiver {
                                         "transfer-progress",
                                         TransferProgress {
                                             transfer_id: current_transfer_id.clone(),
+device_id: current_device_id.clone(),
                                             file_name: current_file_name.clone(),
                                             bytes_sent: bytes_received,
                                             total_bytes: current_file_size,
@@ -594,6 +602,7 @@ impl FileReceiver {
                                 "transfer-progress",
                                 TransferProgress {
                                     transfer_id: current_transfer_id.clone(),
+device_id: current_device_id.clone(),
                                     file_name: current_file_name.clone(),
                                     bytes_sent: bytes_received,
                                     total_bytes: current_file_size,

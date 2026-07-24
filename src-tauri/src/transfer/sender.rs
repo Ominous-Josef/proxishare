@@ -10,6 +10,7 @@ use tauri::{Emitter, Manager};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TransferProgress {
     pub transfer_id: String,
+    pub device_id: String,
     pub file_name: String,
     pub bytes_sent: u64,
     pub total_bytes: u64,
@@ -27,6 +28,7 @@ impl Default for TransferProgress {
     fn default() -> Self {
         Self {
             transfer_id: String::new(),
+            device_id: String::new(),
             file_name: String::new(),
             bytes_sent: 0,
             total_bytes: 0,
@@ -150,7 +152,7 @@ impl FileSender {
         let _ = self.app_handle.emit(
             "transfer-progress",
             TransferProgress {
-                transfer_id: transfer_id.clone(),
+                    transfer_id: transfer_id.clone(), device_id: self.device_id.clone(),
                 file_name: file_name.clone(),
                 bytes_sent: 0,
                 total_bytes: file_size,
@@ -184,7 +186,7 @@ impl FileSender {
             Ok(Ok(MessageType::FileReject { transfer_id: _, reason })) => {
                 println!("[Transfer] Receiver rejected the file: {}", reason);
                 let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                    transfer_id: transfer_id.clone(),
+                    transfer_id: transfer_id.clone(), device_id: self.device_id.clone(),
                     file_name: file_name.clone(),
                     bytes_sent: 0,
                     total_bytes: file_size,
@@ -200,7 +202,7 @@ impl FileSender {
             Ok(Ok(MessageType::TransferError { transfer_id: _, message })) => {
                 println!("[Transfer] Transfer Error: {}", message);
                 let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                    transfer_id: transfer_id.clone(),
+                    transfer_id: transfer_id.clone(), device_id: self.device_id.clone(),
                     file_name: file_name.clone(),
                     bytes_sent: 0,
                     total_bytes: file_size,
@@ -218,7 +220,7 @@ impl FileSender {
             Err(_) => {
                 println!("[Transfer] Timeout waiting for receiver to accept");
                 let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                    transfer_id: transfer_id.clone(),
+                    transfer_id: transfer_id.clone(), device_id: self.device_id.clone(),
                     file_name: file_name.clone(),
                     bytes_sent: 0,
                     total_bytes: file_size,
@@ -328,7 +330,7 @@ impl FileSender {
                 if let Ok(SenderTaskMessage::Error(e)) = rx.try_recv() {
                     let status_str = if e.to_string().contains("cancelled") { "cancelled" } else { "failed" };
                     let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                        transfer_id: transfer_id.clone(),
+                        transfer_id: transfer_id.clone(), device_id: self.device_id.clone(),
                         file_name: file_name.clone(),
                         bytes_sent: total_sent,
                         total_bytes: file_size,
@@ -350,7 +352,7 @@ impl FileSender {
 
                     if status != last_status {
                         let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                            transfer_id: transfer_id.clone(), file_name: file_name.clone(),
+                            transfer_id: transfer_id.clone(), device_id: self.device_id.clone(), file_name: file_name.clone(),
                             bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(),
                             status: match status { crate::TransferStatus::Paused => "paused", crate::TransferStatus::Cancelled => "cancelled", _ => "in_progress" }.to_string(),
                             current_file_path: Some(rel_path.clone()),
@@ -387,7 +389,7 @@ impl FileSender {
 
                         if status == crate::TransferStatus::InProgress {
                             let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                                transfer_id: transfer_id.clone(), file_name: file_name.clone(),
+                                transfer_id: transfer_id.clone(), device_id: self.device_id.clone(), file_name: file_name.clone(),
                                 bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: "in_progress".to_string(),
                                 current_file_path: Some(rel_path.clone()),
                                 current_file_sent: Some(current_file_sent),
@@ -428,7 +430,7 @@ impl FileSender {
                     let final_err = if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() { bg_err } else { e };
                     let status_str = if final_err.to_string().contains("cancelled") { "cancelled" } else { "failed" };
                     let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                        transfer_id: transfer_id.clone(), file_name: file_name.clone(),
+                        transfer_id: transfer_id.clone(), device_id: self.device_id.clone(), file_name: file_name.clone(),
                         bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: status_str.to_string(),
                     
                     ..Default::default()
@@ -440,7 +442,7 @@ impl FileSender {
                     let final_err = if let Ok(SenderTaskMessage::Error(bg_err)) = rx.try_recv() { bg_err } else { e.into() };
                     let status_str = if final_err.to_string().contains("cancelled") { "cancelled" } else { "failed" };
                     let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                        transfer_id: transfer_id.clone(), file_name: file_name.clone(),
+                        transfer_id: transfer_id.clone(), device_id: self.device_id.clone(), file_name: file_name.clone(),
                         bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: status_str.to_string(),
                     
                     ..Default::default()
@@ -453,7 +455,7 @@ impl FileSender {
                 chunk_index += 1;
 
                 let _ = self.app_handle.emit("transfer-progress", TransferProgress {
-                    transfer_id: transfer_id.clone(), file_name: file_name.clone(),
+                    transfer_id: transfer_id.clone(), device_id: self.device_id.clone(), file_name: file_name.clone(),
                     bytes_sent: total_sent, total_bytes: file_size, direction: "send".to_string(), status: "in_progress".to_string(),
                     current_file_path: Some(rel_path.clone()),
                     current_file_sent: Some(current_file_sent),
@@ -541,7 +543,7 @@ impl FileSender {
         let _ = self.app_handle.emit(
             "transfer-progress",
             TransferProgress {
-                transfer_id: transfer_id.clone(),
+                    transfer_id: transfer_id.clone(), device_id: self.device_id.clone(),
                 file_name: file_name.clone(),
                 bytes_sent: file_size,
                 total_bytes: file_size,

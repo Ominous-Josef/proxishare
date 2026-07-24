@@ -24,18 +24,18 @@ const formatLastSeen = (timestamp: number) => {
 };
 
 // Segregate devices based on active status/reachability
-// For now, if a device has been seen in the last 60 seconds or is reachable, it's considered active
+// Keep devices active if seen in the last 120 seconds (to account for slower 15s polling) or if they are currently selected
 const activeDevices = computed(() => {
   return props.devices.filter(d => {
-    const isRecentlySeen = (Date.now() / 1000 - d.last_seen) < 60;
-    return d.isReachable || isRecentlySeen;
+    const isRecentlySeen = (Date.now() / 1000 - d.last_seen) < 120;
+    return d.isReachable || isRecentlySeen || d.id === props.selectedId;
   });
 });
 
 const savedDevices = computed(() => {
   return props.devices.filter(d => {
-    const isRecentlySeen = (Date.now() / 1000 - d.last_seen) < 60;
-    return !d.isReachable && !isRecentlySeen;
+    const isRecentlySeen = (Date.now() / 1000 - d.last_seen) < 120;
+    return !d.isReachable && !isRecentlySeen && d.id !== props.selectedId;
   });
 });
 </script>
@@ -63,7 +63,7 @@ const savedDevices = computed(() => {
 
     <!-- Active Devices -->
     <div>
-      <h3 class="font-label-caps text-label-caps text-primary uppercase tracking-widest mb-4">Currently Connected</h3>
+      <h3 class="font-label-caps text-label-caps text-primary uppercase tracking-widest mb-4">Active on Network</h3>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         
         <div
@@ -89,23 +89,25 @@ const savedDevices = computed(() => {
           </div>
           
           <!-- Info -->
-          <div class="flex-1 min-w-0 z-10">
-            <h4 class="font-headline-lg-mobile text-headline-lg-mobile font-semibold text-on-surface truncate">{{ device.name }}</h4>
-            <div class="flex items-center gap-2 mt-1">
-              <span class="font-body-sm text-body-sm text-on-surface-variant">{{ device.ip }} • {{ formatLastSeen(device.last_seen) }}</span>
+          <div class="flex-1 min-w-0 z-10 flex flex-col justify-center">
+            <h4 class="text-body-lg font-bold text-on-surface truncate" :title="device.name">{{ device.name }}</h4>
+            <div class="mt-1 w-full">
+              <span class="font-body-sm text-on-surface-variant truncate block w-full" :title="device.ip + ' • ' + formatLastSeen(device.last_seen)">
+                {{ device.ip }} • {{ formatLastSeen(device.last_seen) }}
+              </span>
             </div>
           </div>
           
           <!-- Actions -->
-          <div class="flex items-center gap-2 z-10">
-            <button v-if="device.isTrusted" class="p-2 rounded-full hover:bg-white/10 text-on-surface-variant transition-colors group/btn" title="Manage Permissions" @click.stop>
+          <div class="flex items-center gap-2 z-10 shrink-0">
+            <button v-if="device.isTrusted" class="p-2 rounded-full hover:bg-white/10 text-on-surface-variant transition-colors group/btn shrink-0" title="Manage Permissions" @click.stop>
               <Settings2 class="w-5 h-5 group-hover/btn:text-primary" />
             </button>
-            <button v-if="!device.isTrusted" @click.stop="emit('pair', device.id)" class="px-4 py-2 rounded-full border border-primary/30 text-primary font-body-sm hover:bg-primary/10 transition-colors">
+            <button v-if="!device.isTrusted" @click.stop="emit('pair', device.id)" class="px-4 py-2 rounded-full border border-primary/30 text-primary font-body-sm hover:bg-primary/10 transition-colors shrink-0">
               Pair
             </button>
-            <button v-else class="px-4 py-2 rounded-full border border-danger/30 text-danger font-body-sm hover:bg-danger/10 transition-colors" @click.stop>
-              Disconnect
+            <button v-if="device.id === selectedId" @click.stop="emit('select', '')" class="px-3 py-1.5 md:px-4 md:py-2 rounded-full border border-outline-variant/30 text-on-surface font-body-sm hover:bg-surface-variant transition-colors shrink-0">
+              Unselect
             </button>
           </div>
         </div>

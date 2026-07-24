@@ -55,7 +55,6 @@ impl DiscoveryService {
 
         // Get all local IPs to register with mDNS
         let local_ips = get_local_ips();
-        let ip_str = local_ips.first().map(|s| s.as_str()).unwrap_or("");
 
         println!("[mDNS] Broadcasting on interfaces: {:?}", local_ips);
 
@@ -65,11 +64,13 @@ impl DiscoveryService {
         // Store all IPs in properties for cross-interface discovery
         properties.insert("ips".to_string(), local_ips.join(","));
 
+        // Passing an empty string for the IP tells mdns-sd to automatically detect
+        // and broadcast on all available non-loopback network interfaces.
         let service_info = ServiceInfo::new(
             service_type,
             &instance_name,
             &format!("{}.local.", instance_name),
-            ip_str,
+            "", 
             self.port,
             Some(properties),
         )?;
@@ -284,6 +285,12 @@ impl DiscoveryService {
         });
 
         Ok(())
+    }
+
+    /// Trigger an immediate mDNS scan
+    pub fn trigger_scan(&self) {
+        println!("[mDNS] Manual scan triggered...");
+        let _ = self.mdns.browse("_proxishare._tcp.local.");
     }
 
     /// Test connectivity to a device by attempting a TCP connection

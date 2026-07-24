@@ -259,20 +259,21 @@ onMounted(async () => {
         
         <template v-if="currentView === 'devices'">
           <!-- Top area for Drop zone -->
-          <div class="w-full max-w-[700px] flex flex-col gap-8 mt-4">
+          <div class="w-full max-w-[900px] flex flex-col gap-8 mt-4">
             <FileTransfer
               v-if="selectedDevice"
               :device-id="selectedId"
+              :target-name="selectedDevice.name"
               :target-ip="selectedDevice.ip"
               :target-port="selectedDevice.port"
             />
-            <div v-else class="w-full h-[280px] glass-panel rounded-2xl flex flex-col items-center justify-center p-6 drop-zone-glow group relative overflow-hidden shrink-0">
+            <div v-else class="w-full h-[320px] glass-panel rounded-3xl flex flex-col items-center justify-center p-6 drop-zone-glow group relative overflow-hidden shrink-0 border border-white/5 shadow-2xl">
                <div class="absolute inset-0 bg-gradient-to-tr from-primary/5 via-transparent to-secondary/5 opacity-50 transition-opacity duration-300"></div>
-               <div class="bg-surface-container/50 rounded-full p-5 mb-4 shadow-inner border border-white/5 text-primary/80">
-                  <Laptop class="w-12 h-12 stroke-[1.5]" />
+               <div class="bg-surface-container/60 rounded-full p-6 mb-6 shadow-inner border border-white/5 text-primary/80">
+                  <Laptop class="w-14 h-14 stroke-[1.5]" />
                </div>
-               <h2 class="text-headline-lg font-headline-lg text-on-surface mb-1 tracking-tight">Select a device to share</h2>
-               <p class="text-body-sm font-body-sm text-on-surface-variant">Choose a nearby device below to start dropping files</p>
+               <h2 class="text-headline-md font-headline-md text-on-surface mb-2 tracking-tight">Select a device to share</h2>
+               <p class="text-body-md font-body-md text-on-surface-variant">Choose a nearby device below to start dropping files</p>
             </div>
 
             <!-- Device List -->
