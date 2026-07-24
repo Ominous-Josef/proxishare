@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { open } from "@tauri-apps/plugin-dialog";
 import { useFileTransfer } from "../composables/useFileTransfer";
-import { ref, computed } from "vue";
-import { CloudUpload, FolderUp, Loader2, MonitorSmartphone, Laptop, Smartphone, FileUp, X, Upload, Pause, Play, Download } from "lucide-vue-next";
+import { ref, computed, onMounted, onUnmounted } from "vue";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { CloudUpload, FolderUp, MonitorSmartphone, Laptop, FileUp, X, Upload, Pause, Play } from "lucide-vue-next";
 
 const props = defineProps<{
   deviceId: string | null;
@@ -14,6 +15,7 @@ const props = defineProps<{
 const { sendFile, transfers, cancelTransfer, pauseTransfer, resumeTransfer } = useFileTransfer();
 const isSending = ref(false);
 const statusMessage = ref<string | null>(null);
+const isDragOver = ref(false);
 
 const activeDeviceTransfers = computed(() => {
   return transfers.value.filter(t => t.deviceId === props.deviceId && !['completed', 'failed', 'cancelled'].includes(t.status));
@@ -56,144 +58,188 @@ const selectAndSend = async (isFolder: boolean = false) => {
   }
 };
 
-const formatSpeed = (bps?: number) => {
-  if (!bps) return "Calculating...";
-  if (bps > 1024 * 1024) return (bps / 1024 / 1024).toFixed(1) + " MB/s";
-  if (bps > 1024) return (bps / 1024).toFixed(1) + " KB/s";
-  return bps + " B/s";
-};
+let unlistenDrop: UnlistenFn | null = null;
+let unlistenDragEnter: UnlistenFn | null = null;
+let unlistenDragLeave: UnlistenFn | null = null;
 
-const formatTime = (seconds?: number) => {
-  if (!seconds || seconds < 0) return "Calculating...";
-  if (seconds > 3600) return Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m";
-  if (seconds > 60) return Math.floor(seconds / 60) + "m " + Math.floor(seconds % 60) + "s";
-  return Math.floor(seconds) + "s";
-};
+onMounted(async () => {
+  // Setup global tauri file drop listener
+  unlistenDrop = await listen<{ paths: string[] }>('tauri://drop', async (event) => {
+    isDragOver.value = false;
+    if (!props.deviceId || !props.targetIp || !props.targetPort) return;
+    
+    const paths = event.payload.paths;
+    if (paths && paths.length > 0) {
+      for (const path of paths) {
+        // Assume file for now, Tauri drop doesn't easily tell file vs dir without fs stat.
+        // We will pass false for isFolder, the Rust backend handles it if it's actually a file.
+        // If it's a folder, it might fail in Rust if we don't know, but we can update that later.
+        await sendFile(props.deviceId, path, props.targetIp, props.targetPort, false);
+      }
+    }
+  });
+
+  unlistenDragEnter = await listen('tauri://drag-enter', () => {
+    isDragOver.value = true;
+  });
+
+  unlistenDragLeave = await listen('tauri://drag-leave', () => {
+    isDragOver.value = false;
+  });
+});
+
+onUnmounted(() => {
+  if (unlistenDrop) unlistenDrop();
+  if (unlistenDragEnter) unlistenDragEnter();
+  if (unlistenDragLeave) unlistenDragLeave();
+});
+
 </script>
 
 <template>
-  <div class="relative w-full flex flex-col items-center justify-center py-12 shrink-0 select-none overflow-hidden rounded-3xl bg-surface-container-lowest/30 border border-white/5 shadow-inner">
+  <div class="w-full flex flex-col gap-6 select-none shrink-0">
     
-    <!-- Subtle background texture/radial glow -->
-    <div class="absolute inset-0 pointer-events-none opacity-[0.15]" style="background: radial-gradient(circle at 50% 50%, theme('colors.primary-container') 0%, transparent 60%);"></div>
-    
-    <!-- Zonal Alignment: Central Visual Field -->
-    <div class="relative w-full max-w-4xl flex items-center justify-center z-10 px-4" :class="deviceId ? 'gap-4 md:gap-8' : 'gap-0'">
+    <!-- Dropzone Area -->
+    <div 
+      class="relative w-full flex flex-col items-center justify-center py-8 overflow-hidden rounded-3xl transition-all duration-300 shadow-inner"
+      :class="isDragOver ? 'bg-primary/10 border-2 border-dashed border-primary shadow-[0_0_40px_theme(\'colors.primary\')]' : 'bg-surface-container-lowest/30 border border-white/10 hover:bg-surface-container-low/40'"
+    >
+      <!-- Subtle background texture/radial glow -->
+      <div class="absolute inset-0 pointer-events-none opacity-[0.1]" style="background: radial-gradient(circle at 50% 50%, theme('colors.primary-container') 0%, transparent 60%);"></div>
       
-      <!-- Local Node -->
-      <div class="relative flex flex-col items-center group transition-all duration-500 shrink-0">
-        <div class="w-24 h-24 md:w-32 md:h-32 rounded-full border-2 border-dashed border-primary/30 bg-surface-container/50 backdrop-blur-md flex items-center justify-center shadow-[0_0_40px_rgba(208,188,255,0.05)] relative z-10">
-          <MonitorSmartphone class="w-10 h-10 md:w-12 md:h-12 text-primary/60" />
+      <!-- Small Visual Nodes -->
+      <div class="relative w-full max-w-2xl flex items-center justify-center z-10 px-4" :class="deviceId ? 'gap-4 md:gap-6' : 'gap-0'">
+        
+        <!-- Local Node -->
+        <div class="relative flex flex-col items-center group transition-all duration-500 shrink-0">
+          <div class="w-14 h-14 md:w-16 md:h-16 rounded-full border-2 border-dashed border-primary/30 bg-surface-container/50 backdrop-blur-md flex items-center justify-center shadow-[0_0_20px_rgba(208,188,255,0.05)] relative z-10">
+            <MonitorSmartphone class="w-6 h-6 md:w-8 md:h-8 text-primary/60" />
+          </div>
+          <span class="mt-3 font-code-display text-[10px] text-on-surface-variant uppercase tracking-widest font-semibold">Local Node</span>
         </div>
-        <span class="mt-6 font-body-sm text-body-sm text-on-surface-variant uppercase tracking-widest font-semibold">Local Node</span>
+
+        <!-- Transfer Visual (Connecting Line) -->
+        <Transition name="fade">
+          <div v-if="deviceId" class="hidden md:flex flex-col flex-1 items-center justify-center px-4 w-full min-w-[80px] max-w-[150px] relative">
+            <div class="w-full h-1 bg-surface-variant rounded-full relative overflow-hidden">
+              <div 
+                class="absolute top-0 left-0 h-full rounded-full transition-all duration-300 shadow-[0_0_10px_theme('colors.primary')]"
+                :class="currentTransfer ? 'bg-primary' : 'bg-primary w-1/3 progress-bar-animated'"
+                :style="currentTransfer ? { width: `${currentTransfer.progress}%` } : {}"
+              ></div>
+            </div>
+          </div>
+        </Transition>
+
+        <!-- Target Device -->
+        <Transition name="slide-fade">
+          <div v-if="deviceId" class="relative flex flex-col items-center z-10 shrink-0">
+            <div class="relative w-14 h-14 md:w-16 md:h-16 rounded-full flex items-center justify-center">
+              <!-- Transferring Circular Progress Ring -->
+              <svg v-if="isSending || currentTransfer" class="absolute inset-0 w-full h-full -rotate-90 pointer-events-none drop-shadow-[0_0_15px_theme('colors.secondary')]" viewBox="0 0 100 100">
+                <circle class="stroke-surface-variant" cx="50" cy="50" fill="none" r="46" stroke-width="3"></circle>
+                <circle class="stroke-secondary" cx="50" cy="50" fill="none" r="46" :stroke-dasharray="289" :stroke-dashoffset="currentTransfer ? 289 - (289 * currentTransfer.progress) / 100 : 144" stroke-linecap="round" stroke-width="4" style="transition: stroke-dashoffset 0.3s ease;"></circle>
+              </svg>
+              <svg v-else class="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100">
+                <circle class="stroke-secondary/30" cx="50" cy="50" fill="none" r="46" stroke-width="3" stroke-dasharray="8 8"></circle>
+              </svg>
+              <!-- Avatar Core -->
+              <div class="w-10 h-10 md:w-12 md:h-12 rounded-full bg-surface-container-highest border-2 border-secondary flex items-center justify-center shadow-lg relative z-10 overflow-hidden" :class="{ 'animate-pulse-ring': isSending || currentTransfer }">
+                <div class="absolute inset-0 bg-secondary/10"></div>
+                <Laptop class="w-5 h-5 text-secondary relative z-20" />
+              </div>
+            </div>
+            <span class="mt-3 font-code-display text-[10px] text-on-surface uppercase tracking-widest font-semibold max-w-[100px] truncate text-center" :title="targetName || 'Target'">{{ targetName || 'Target' }}</span>
+          </div>
+        </Transition>
+
       </div>
 
-      <!-- Transfer Visual (Connecting Line) -->
-      <Transition name="fade">
-        <div v-if="deviceId" class="hidden md:flex flex-col flex-1 items-center justify-center px-4 w-full min-w-[120px] max-w-[250px] relative">
-          
-          <div v-if="currentTransfer" class="absolute -top-8 w-full flex justify-center items-end">
-             <span class="text-primary font-code-display text-[16px] font-bold drop-shadow-[0_0_8px_theme('colors.primary')]">{{ currentTransfer.progress }}%</span>
-          </div>
-
-          <div class="w-full h-1.5 bg-surface-variant rounded-full relative overflow-hidden">
-            <div 
-              class="absolute top-0 left-0 h-full rounded-full transition-all duration-300 shadow-[0_0_10px_theme('colors.primary')]"
-              :class="currentTransfer ? 'bg-primary' : 'bg-primary w-1/3 progress-bar-animated'"
-              :style="currentTransfer ? { width: `${currentTransfer.progress}%` } : {}"
-            ></div>
-          </div>
-        </div>
-      </Transition>
-
-      <!-- Target Device -->
-      <Transition name="slide-fade">
-        <div v-if="deviceId" class="relative flex flex-col items-center z-10 shrink-0">
-          <div class="relative w-24 h-24 md:w-32 md:h-32 rounded-full flex items-center justify-center">
-            <!-- Transferring Circular Progress Ring -->
-            <svg v-if="isSending || currentTransfer" class="absolute inset-0 w-full h-full -rotate-90 pointer-events-none drop-shadow-[0_0_15px_theme('colors.secondary')]" viewBox="0 0 100 100">
-              <circle class="stroke-surface-variant" cx="50" cy="50" fill="none" r="46" stroke-width="2"></circle>
-              <circle class="stroke-secondary" cx="50" cy="50" fill="none" r="46" :stroke-dasharray="289" :stroke-dashoffset="currentTransfer ? 289 - (289 * currentTransfer.progress) / 100 : 144" stroke-linecap="round" stroke-width="3" style="transition: stroke-dashoffset 0.3s ease;"></circle>
-            </svg>
-            <svg v-else class="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100">
-              <circle class="stroke-secondary/30" cx="50" cy="50" fill="none" r="46" stroke-width="2" stroke-dasharray="4 4"></circle>
-            </svg>
-            <!-- Avatar Core -->
-            <div class="w-[72px] h-[72px] md:w-[84px] md:h-[84px] rounded-full bg-surface-container-highest border-2 border-secondary flex items-center justify-center shadow-lg relative z-10 overflow-hidden" :class="{ 'animate-pulse-ring': isSending || currentTransfer }">
-              <div class="absolute inset-0 bg-secondary/10"></div>
-              <Laptop class="w-8 h-8 text-secondary relative z-20" />
-            </div>
-          </div>
-          <span class="mt-6 font-body-sm text-body-sm text-on-surface uppercase tracking-widest font-semibold max-w-[150px] truncate text-center" :title="targetName || 'Target Device'">{{ targetName || 'Target Device' }}</span>
-        </div>
-      </Transition>
-
+      <!-- Dropzone Instructions -->
+      <div class="mt-6 flex flex-col items-center z-20">
+         <p class="font-body-md text-on-surface-variant font-medium text-center">
+            <span v-if="isDragOver" class="text-primary font-bold">Drop files to send to {{ targetName || 'device' }}!</span>
+            <span v-else>Drag & drop files here to send</span>
+         </p>
+         
+         <!-- Manual Send Buttons -->
+         <div class="flex gap-3 mt-4">
+            <button 
+              @click="selectAndSend(false)" 
+              :disabled="!deviceId"
+              class="px-5 py-2 rounded-full font-body-sm font-semibold flex items-center gap-2 transition-all duration-300"
+              :class="deviceId ? 'bg-primary/20 text-primary hover:bg-primary/30 active:scale-95' : 'bg-surface-variant text-on-surface-variant opacity-50 cursor-not-allowed'"
+            >
+              <Upload class="w-4 h-4" />
+              Send File
+            </button>
+            <button 
+              @click="selectAndSend(true)" 
+              :disabled="!deviceId"
+              class="px-5 py-2 rounded-full font-body-sm font-semibold flex items-center gap-2 transition-all duration-300 border border-outline-variant/30"
+              :class="deviceId ? 'bg-surface-container-low text-on-surface hover:bg-surface-bright active:scale-95' : 'bg-surface-variant/20 text-on-surface-variant opacity-50 cursor-not-allowed'"
+            >
+              <FolderUp class="w-4 h-4" />
+              Send Folder
+            </button>
+         </div>
+      </div>
     </div>
 
-    <!-- Actions Area / Active Transfers -->
-    <div class="mt-12 flex flex-col items-center w-full max-w-xl px-6 z-20 min-h-[64px]">
-      <Transition name="fade" mode="out-in">
-        
-        <!-- Default Send Buttons -->
-        <div v-if="activeDeviceTransfers.length === 0" class="flex flex-wrap justify-center gap-4">
-          <button 
-            @click="selectAndSend(false)" 
-            :disabled="!deviceId"
-            class="px-8 py-3.5 rounded-full font-body-md font-bold flex items-center gap-3 transition-all duration-300"
-            :class="deviceId ? 'bg-primary text-on-primary hover:shadow-[0_0_20px_rgba(208,188,255,0.4)] active:scale-95' : 'bg-surface-variant text-on-surface-variant opacity-50 cursor-not-allowed'"
-          >
-            <Upload class="w-5 h-5" />
-            Send File
-          </button>
-          
-          <button 
-            @click="selectAndSend(true)" 
-            :disabled="!deviceId"
-            class="px-8 py-3.5 rounded-full font-body-md font-bold flex items-center gap-3 transition-all duration-300 border border-outline-variant/30"
-            :class="deviceId ? 'bg-surface-container-high text-on-surface hover:bg-surface-bright active:scale-95' : 'bg-surface-variant/20 text-on-surface-variant opacity-50 cursor-not-allowed'"
-          >
-            <FolderUp class="w-5 h-5" />
-            Send Folder
-          </button>
-        </div>
-
-        <!-- Interactive Active Transfers List -->
-        <div v-else class="w-full flex flex-col gap-3">
-          <div 
-            v-for="transfer in activeDeviceTransfers" 
-            :key="transfer.id"
-            class="bg-surface-container-low border border-white/10 rounded-2xl p-4 flex flex-col shadow-lg transition-all duration-300"
-          >
-            <div class="flex items-center justify-between mb-2">
-              <div class="flex items-center gap-3 overflow-hidden">
+    <!-- Active Transfers Section -->
+    <div v-if="activeDeviceTransfers.length > 0" class="w-full flex flex-col gap-4">
+      <h3 class="font-body-sm text-on-surface-variant font-semibold tracking-wider uppercase pl-2 border-l-2 border-primary">Active Transfers</h3>
+      
+      <div class="flex flex-col gap-3">
+        <div 
+          v-for="transfer in activeDeviceTransfers" 
+          :key="transfer.id"
+          class="bg-surface-container-low border border-white/10 rounded-2xl p-4 flex flex-col shadow-lg transition-all duration-300"
+        >
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-3 overflow-hidden">
+              <div class="bg-surface-variant/30 p-2 rounded-xl border border-white/5">
                 <CloudUpload v-if="transfer.direction === 'send'" class="w-5 h-5 text-secondary animate-pulse shrink-0" />
                 <FileUp v-else class="w-5 h-5 text-primary animate-pulse shrink-0" />
-                <div class="flex flex-col min-w-0">
-                  <span class="font-body-md font-semibold text-on-surface truncate">{{ transfer.fileName }}</span>
-                  <span class="text-xs text-on-surface-variant">{{ (transfer.bytesTransferred / 1024 / 1024).toFixed(1) }} MB / {{ (transfer.totalBytes / 1024 / 1024).toFixed(1) }} MB</span>
-                </div>
               </div>
-              <div class="flex items-center gap-1 shrink-0 ml-4">
-                <button v-if="transfer.status === 'in_progress'" @click="pauseTransfer(transfer.id)" class="text-on-surface hover:text-accent-orange bg-surface-variant/30 hover:bg-accent-orange/20 p-2 rounded-full transition-colors" title="Pause">
-                  <Pause class="w-4 h-4 fill-current" />
-                </button>
-                <button v-else-if="transfer.status === 'paused'" @click="resumeTransfer(transfer.id)" class="text-on-surface hover:text-success bg-surface-variant/30 hover:bg-success/20 p-2 rounded-full transition-colors" title="Resume">
-                  <Play class="w-4 h-4 fill-current" />
-                </button>
-                <button @click="cancelTransfer(transfer.id)" class="text-on-surface hover:text-danger bg-surface-variant/30 hover:bg-danger/20 p-2 rounded-full transition-colors" title="Cancel">
-                  <X class="w-4 h-4" />
-                </button>
+              <div class="flex flex-col min-w-0">
+                <span class="font-body-md font-semibold text-on-surface truncate">{{ transfer.fileName }}</span>
+                <span class="text-xs text-on-surface-variant mt-0.5">
+                   {{ transfer.status === 'paused' ? 'Paused' : 'Transferring' }} • {{ (transfer.bytesTransferred / 1024 / 1024).toFixed(1) }} MB of {{ (transfer.totalBytes / 1024 / 1024).toFixed(1) }} MB
+                </span>
               </div>
             </div>
+            
+            <div class="flex items-center gap-1.5 shrink-0 ml-4">
+              <button v-if="transfer.status === 'in_progress'" @click="pauseTransfer(transfer.id)" class="text-on-surface hover:text-accent-orange bg-surface-variant/30 hover:bg-accent-orange/20 p-2 rounded-full transition-colors" title="Pause">
+                <Pause class="w-4 h-4 fill-current" />
+              </button>
+              <button v-else-if="transfer.status === 'paused'" @click="resumeTransfer(transfer.id)" class="text-on-surface hover:text-success bg-surface-variant/30 hover:bg-success/20 p-2 rounded-full transition-colors" title="Resume">
+                <Play class="w-4 h-4 fill-current" />
+              </button>
+              <button @click="cancelTransfer(transfer.id)" class="text-on-surface hover:text-danger bg-surface-variant/30 hover:bg-danger/20 p-2 rounded-full transition-colors" title="Cancel">
+                <X class="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          
+          <div class="w-full flex items-center gap-3">
+             <span class="text-primary font-code-display text-[12px] font-bold w-10 shrink-0">{{ transfer.progress }}%</span>
+             <div class="flex-1 h-1.5 bg-surface-variant rounded-full overflow-hidden shadow-inner relative">
+                <div 
+                   class="absolute left-0 top-0 h-full rounded-full transition-all duration-300"
+                   :class="transfer.status === 'paused' ? 'bg-surface-variant/60' : 'bg-primary'"
+                   :style="{ width: `${transfer.progress}%` }"
+                ></div>
+             </div>
           </div>
         </div>
-
-      </Transition>
+      </div>
     </div>
 
     <!-- Error Toast -->
     <Transition name="fade">
-      <div v-if="statusMessage" class="absolute bottom-4 bg-error-container/20 text-error border border-error/30 px-4 py-2 rounded-lg text-sm font-medium z-30">
+      <div v-if="statusMessage" class="fixed bottom-8 left-1/2 -translate-x-1/2 bg-error-container/90 backdrop-blur-md text-error border border-error/30 px-6 py-3 rounded-full text-sm font-medium z-50 shadow-2xl">
         {{ statusMessage }}
       </div>
     </Transition>

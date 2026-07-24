@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Settings, Monitor, Shield, HardDrive, Palette, FolderOpen } from 'lucide-vue-next';
+import { Settings, Monitor, Shield, Palette, FolderOpen } from 'lucide-vue-next';
 import { ref } from 'vue';
 
 const deviceName = ref("My Node");

@@ -1,17 +1,16 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { openUrl } from "@tauri-apps/plugin-opener";
+
 import { computed, onMounted, ref } from "vue";
 import DeviceList from "./components/DeviceList.vue";
 import FileTransfer from "./components/FileTransfer.vue";
-import NetworkDiagnostics from "./components/NetworkDiagnostics.vue";
 import PairingDialog from "./components/PairingDialog.vue";
 import SettingsView from "./components/SettingsView.vue";
 import TransferHistory from "./components/TransferHistory.vue";
 import FileAcceptDialog from "./components/FileAcceptDialog.vue";
 import { useDevices, type Device } from "./composables/useDevices";
-import { Share2, History, Settings, HelpCircle, Upload, Download, X, Laptop } from "lucide-vue-next";
+import { Share2, History, Settings, Upload, Download, X, Laptop } from "lucide-vue-next";
 
 const { devices, isDiscovering, refreshDevices, triggerScan } = useDevices();
 const selectedId = ref<string | null>(null);
@@ -41,10 +40,6 @@ const selectedDevice = computed(
 
 const handleSelect = (id: string) => {
   selectedId.value = id;
-};
-
-const handleReportIssue = async () => {
-  await openUrl("https://github.com/Ominous-Josef/proxishare/issues");
 };
 
 const handlePair = async (id: string) => {

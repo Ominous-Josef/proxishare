@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { Device } from "../composables/useDevices";
-import { MonitorSmartphone, Laptop, Smartphone, Check, Plus, Radar, Settings2, Trash2 } from "lucide-vue-next";
+import { MonitorSmartphone, Laptop, Smartphone, Radar, Settings2, Trash2 } from "lucide-vue-next";
 
 const props = defineProps<{
   devices: Device[];
