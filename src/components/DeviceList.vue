@@ -54,10 +54,10 @@ const savedDevices = computed(() => {
       <button 
         @click="emit('scan')"
         :disabled="isDiscovering"
-        class="bg-primary text-on-primary font-body-md font-bold px-6 py-3 rounded-full hover:shadow-[0_0_20px_rgba(208,188,255,0.4)] transition-all flex items-center gap-2 active:scale-95 group disabled:opacity-50 disabled:pointer-events-none"
+        class="bg-primary text-on-primary font-body-md font-bold px-6 py-3 rounded-full hover:shadow-[0_0_20px_rgba(208,188,255,0.4)] transition-all flex items-center justify-center gap-2 active:scale-95 group disabled:opacity-50 disabled:pointer-events-none shrink-0"
       >
-        <Radar :class="['w-5 h-5', isDiscovering ? 'animate-spin' : 'group-hover:animate-spin']" style="animation-duration: 3s;" />
-        {{ isDiscovering ? 'Scanning...' : 'Scan for Devices' }}
+        <Radar :class="['w-5 h-5 shrink-0', isDiscovering ? 'animate-spin' : 'group-hover:animate-spin']" style="animation-duration: 3s;" />
+        <span class="whitespace-nowrap">{{ isDiscovering ? 'Scanning...' : 'Scan for Devices' }}</span>
       </button>
     </div>
 
