@@ -120,6 +120,11 @@ device_id: current_device_id.clone(),
                             }
                             
                             println!("[Receiver] Handled Hello ping from {}: {}", device_name, device_id);
+                            
+                            // Finish stream and wait to ensure QUIC delivers the ACK
+                            let _ = send_stream.finish();
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            
                             return Err("Ping connection closed".into());
                         }
                         MessageType::FileOffer {
