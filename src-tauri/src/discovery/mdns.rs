@@ -67,12 +67,19 @@ impl DiscoveryService {
         // Store all IPs in properties for cross-interface discovery
         properties.insert("ips".to_string(), local_ips.join(","));
 
+        // Create a safe hostname (no spaces or special chars)
+        let safe_hostname: String = instance_name.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+            .collect();
+        // Remove consecutive dashes and trailing/leading dashes
+        let safe_hostname = safe_hostname.replace("--", "-").trim_matches('-').to_string();
+
         // Passing an empty string for the IP tells mdns-sd to automatically detect
         // and broadcast on all available non-loopback network interfaces.
         let service_info = ServiceInfo::new(
             service_type,
             &instance_name,
-            &format!("{}.local.", instance_name),
+            &format!("{}.local.", safe_hostname),
             "", 
             self.port,
             Some(properties),

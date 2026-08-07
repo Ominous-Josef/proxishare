@@ -680,8 +680,12 @@ pub fn run() {
                 tm_clone.start_listening().await;
             });
 
-            let _ = discovery.start_broadcasting();
-            let _ = discovery.start_discovery();
+            if let Err(e) = discovery.start_broadcasting() {
+                println!("Error starting broadcasting: {:?}", e);
+            }
+            if let Err(e) = discovery.start_discovery() {
+                println!("Error starting discovery: {:?}", e);
+            }
 
             let app_state = AppState {
                 discovery: Arc::new(RwLock::new(Some(discovery))),
