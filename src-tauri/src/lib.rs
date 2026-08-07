@@ -88,15 +88,29 @@ async fn add_device_manually(ip: String, state: tauri::State<'_, AppState>) -> R
 
 #[tauri::command]
 async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec<Device>, String> {
-    let discovery = state.discovery.read().await.clone();
-    if let Some(ds) = discovery {
-        let devices = ds.get_devices().await;
-        println!("[API] get_discovered_devices returning {} devices", devices.len());
-        Ok(devices)
+    let mut devices = if let Some(ds) = state.discovery.read().await.as_ref() {
+        ds.get_devices().await
     } else {
-        println!("[API] get_discovered_devices: discovery service not initialized");
-        Ok(vec![])
+        vec![]
+    };
+
+    // Inject offline trusted devices into the discovery response
+    let security = state.security.read().await;
+    for (_, td) in &security.trusted_devices {
+        // Only add if not already currently discovered (online)
+        if !devices.iter().any(|d| d.id == td.id) {
+            devices.push(Device {
+                id: td.id.clone(),
+                name: td.name.clone(),
+                ip: td.last_ip.clone(),
+                all_ips: vec![td.last_ip.clone()],
+                port: td.last_port,
+                last_seen: td.last_seen,
+            });
+        }
     }
+
+    Ok(devices)
 }
 
 #[tauri::command]
@@ -217,7 +231,7 @@ async fn send_file(
 #[tauri::command]
 async fn get_trusted_devices(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     let security = state.security.read().await;
-    Ok(security.trusted_devices.iter().cloned().collect())
+    Ok(security.trusted_devices.keys().cloned().collect())
 }
 
 #[tauri::command]
@@ -237,8 +251,14 @@ async fn test_device_connectivity(
 ) -> Result<bool, String> {
     let tm = state.transfer.read().await.clone();
     if let Some(tm) = tm {
-        let my_id = "test_connectivity_ping".to_string();
-        let my_name = "Ping".to_string();
+        let security = state.security.read().await;
+        let my_id = security.get_device_id().clone();
+        drop(security);
+        
+        let settings = state.settings.read().await;
+        let my_name = settings.get_settings().device_name;
+        drop(settings);
+
         match tm.ping_device(&ip, port, my_id, my_name).await {
             Ok(_) => Ok(true),
             Err(e) => {
@@ -262,8 +282,13 @@ async fn find_reachable_device_ip(
     if let (Some(ds), Some(tm)) = (discovery, tm) {
         let devices = ds.get_devices().await;
         if let Some(device) = devices.iter().find(|d| d.id == device_id) {
-            let my_id = "test_connectivity_ping".to_string();
-            let my_name = "Ping".to_string();
+            let security = state.security.read().await;
+            let my_id = security.get_device_id().clone();
+            drop(security);
+            
+            let settings = state.settings.read().await;
+            let my_name = settings.get_settings().device_name;
+            drop(settings);
             
             // Try primary IP
             if tm.ping_device(&device.ip, device.port, my_id.clone(), my_name.clone()).await.is_ok() {
@@ -441,6 +466,7 @@ async fn cancel_transfer(
 #[tauri::command]
 async fn accept_pairing(
     device_id: String,
+    device_name: String,
     ip: String,
     port: u16,
     state: tauri::State<'_, AppState>,
@@ -449,9 +475,20 @@ async fn accept_pairing(
         "[Pairing] Accepting pairing for device: {} at {}:{}",
         device_id, ip, port
     );
+    let settings = state.settings.read().await;
+    let my_name = settings.get_settings().device_name;
+    drop(settings);
+
     let mut security = state.security.write().await;
+    let trusted_device = crate::crypto::security::TrustedDevice {
+        id: device_id.clone(),
+        name: device_name.clone(),
+        last_ip: ip.clone(),
+        last_port: port,
+        last_seen: std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
+    };
     security
-        .add_trusted(device_id.clone())
+        .add_trusted(trusted_device)
         .map_err(|e| e.to_string())?;
     println!("[Pairing] Device {} is now trusted", device_id);
     let my_id = security.get_device_id().clone();
@@ -467,6 +504,7 @@ async fn accept_pairing(
                 crate::transfer::protocol::MessageType::PairResponse {
                     accepted: true,
                     device_id: my_id,
+                    device_name: my_name,
                 },
             )
             .await;
@@ -497,6 +535,7 @@ async fn reject_pairing(
                 crate::transfer::protocol::MessageType::PairResponse {
                     accepted: false,
                     device_id: "".to_string(), // They don't need our ID if rejected
+                    device_name: "".to_string(), // They don't need our name if rejected
                 },
             )
             .await;

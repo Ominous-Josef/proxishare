@@ -510,10 +510,17 @@ device_id: current_device_id.clone(),
                                 }),
                             );
                         }
-                        MessageType::PairResponse { accepted, device_id }
+                        MessageType::PairResponse { accepted, device_id, device_name }
                             if accepted => {
                                 let mut security = self.security.write().await;
-                                let _ = security.add_trusted(device_id.clone());
+                                let trusted_device = crate::crypto::security::TrustedDevice {
+                                    id: device_id.clone(),
+                                    name: device_name.clone(),
+                                    last_ip: self.connection.remote_address().ip().to_string(),
+                                    last_port: self.connection.remote_address().port(),
+                                    last_seen: std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
+                                };
+                                let _ = security.add_trusted(trusted_device);
                                 println!("[Pairing] Device {} is now trusted", device_id);
                             }
                         _ => {}

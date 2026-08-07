@@ -1,16 +1,25 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TrustedDevice {
+    pub id: String,
+    pub name: String,
+    pub last_ip: String,
+    pub last_port: u16,
+    pub last_seen: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TrustStore {
-    pub trusted_devices: HashSet<String>, // Set of device IDs
+    pub trusted_devices: HashMap<String, TrustedDevice>, // Map of device ID to device metadata
 }
 
 pub struct SecurityService {
     store_path: PathBuf,
-    pub trusted_devices: HashSet<String>,
+    pub trusted_devices: HashMap<String, TrustedDevice>,
     my_id: String,
 }
 
@@ -19,9 +28,9 @@ impl SecurityService {
         let store_path = app_dir.join("trust_store.json");
         let trusted_devices = if store_path.exists() {
             let content = fs::read_to_string(&store_path).unwrap_or_default();
-            serde_json::from_str(&content).unwrap_or_else(|_| HashSet::new())
+            serde_json::from_str(&content).unwrap_or_else(|_| HashMap::new())
         } else {
-            HashSet::new()
+            HashMap::new()
         };
 
         Self {
@@ -36,11 +45,11 @@ impl SecurityService {
     }
 
     pub fn is_trusted(&self, device_id: &str) -> bool {
-        self.trusted_devices.contains(device_id)
+        self.trusted_devices.contains_key(device_id)
     }
 
-    pub fn add_trusted(&mut self, device_id: String) -> Result<(), Box<dyn std::error::Error>> {
-        self.trusted_devices.insert(device_id);
+    pub fn add_trusted(&mut self, device: TrustedDevice) -> Result<(), Box<dyn std::error::Error>> {
+        self.trusted_devices.insert(device.id.clone(), device);
         self.save()
     }
 

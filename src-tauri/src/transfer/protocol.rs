@@ -99,6 +99,7 @@ pub enum MessageType {
     PairResponse {
         accepted: bool,
         device_id: String,
+        device_name: String,
     },
 
     // Sync (placeholder for Phase 4)

@@ -77,6 +77,7 @@ const handlePairConfirm = async (code: string) => {
       );
       await invoke("accept_pairing", {
         deviceId: pairingRequest.value.device.id,
+        deviceName: pairingRequest.value.device.name,
         ip: pairingRequest.value.ip,
         port: pairingRequest.value.port,
       });
