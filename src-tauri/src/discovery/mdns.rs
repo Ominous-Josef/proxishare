@@ -58,6 +58,7 @@ impl DiscoveryService {
 
         // Get all local IPs to register with mDNS
         let local_ips = get_local_ips();
+        let ip_str = local_ips.first().cloned().unwrap_or_default();
 
         println!("[mDNS] Broadcasting on interfaces: {:?}", local_ips);
 
@@ -74,13 +75,12 @@ impl DiscoveryService {
         // Remove consecutive dashes and trailing/leading dashes
         let safe_hostname = safe_hostname.replace("--", "-").trim_matches('-').to_string();
 
-        // Passing an empty string for the IP tells mdns-sd to automatically detect
-        // and broadcast on all available non-loopback network interfaces.
+        // Passing the actual IP is crucial for mDNS to advertise correctly on Linux.
         let service_info = ServiceInfo::new(
             service_type,
             &instance_name,
             &format!("{}.local.", safe_hostname),
-            "", 
+            &ip_str, 
             self.port,
             Some(properties),
         )?;
