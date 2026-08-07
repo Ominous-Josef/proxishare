@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { ref, computed } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import type { Device } from "../composables/useDevices";
-import { MonitorSmartphone, Laptop, Smartphone, Radar, Settings2, Trash2 } from "lucide-vue-next";
+import { MonitorSmartphone, Laptop, Smartphone, Radar, Settings2, Trash2, Network } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
 
 const props = defineProps<{
@@ -39,6 +40,26 @@ const savedDevices = computed(() => {
     return !d.isReachable && !isRecentlySeen && d.id !== props.selectedId;
   });
 });
+
+const showManualConnect = ref(false);
+const manualIp = ref("");
+const isConnecting = ref(false);
+const manualConnectError = ref("");
+
+const connectManually = async () => {
+  if (!manualIp.value) return;
+  isConnecting.value = true;
+  manualConnectError.value = "";
+  try {
+    await invoke("add_device_manually", { ip: manualIp.value });
+    showManualConnect.value = false;
+    manualIp.value = "";
+  } catch (e: any) {
+    manualConnectError.value = typeof e === 'string' ? e : "Connection failed";
+  } finally {
+    isConnecting.value = false;
+  }
+};
 </script>
 
 <template>
@@ -52,15 +73,25 @@ const savedDevices = computed(() => {
           Manage permissions, review connection history, and configure trusted devices on your local network.
         </p>
       </div>
-      <AppButton 
-        @click="emit('scan')"
-        :disabled="isDiscovering"
-        :variant="isDiscovering ? 'surface-variant' : 'primary'"
-        class="flex items-center gap-2 group shrink-0"
-      >
-        <Radar :class="['w-5 h-5 shrink-0', isDiscovering ? 'animate-spin' : 'group-hover:animate-spin']" style="animation-duration: 3s;" />
-        <span class="whitespace-nowrap">{{ isDiscovering ? 'Scanning...' : 'Scan for Devices' }}</span>
-      </AppButton>
+      <div class="flex items-center gap-3">
+        <AppButton 
+          @click="showManualConnect = true"
+          variant="outline"
+          class="flex items-center gap-2 shrink-0 border-outline/50 hover:bg-surface-variant/30"
+        >
+          <Network class="w-5 h-5 shrink-0" />
+          <span class="whitespace-nowrap hidden sm:inline">Connect via IP</span>
+        </AppButton>
+        <AppButton 
+          @click="emit('scan')"
+          :disabled="isDiscovering"
+          :variant="isDiscovering ? 'surface-variant' : 'primary'"
+          class="flex items-center gap-2 group shrink-0"
+        >
+          <Radar :class="['w-5 h-5 shrink-0', isDiscovering ? 'animate-spin' : 'group-hover:animate-spin']" style="animation-duration: 3s;" />
+          <span class="whitespace-nowrap">{{ isDiscovering ? 'Scanning...' : 'Scan' }}</span>
+        </AppButton>
+      </div>
     </div>
 
     <!-- Active Devices -->
@@ -173,6 +204,33 @@ const savedDevices = computed(() => {
       </div>
     </div>
     
+    <!-- Manual Connect Dialog -->
+    <div v-if="showManualConnect" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" @click.self="showManualConnect = false">
+      <div class="bg-surface border border-outline-variant/30 rounded-3xl p-6 w-full max-w-sm shadow-2xl relative overflow-hidden" @click.stop>
+        <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-primary to-secondary"></div>
+        
+        <h3 class="font-headline-sm text-headline-sm text-on-surface mb-2">Connect via IP</h3>
+        <p class="font-body-md text-on-surface-variant mb-6">Enter the IP address of the device you want to connect to.</p>
+        
+        <div class="mb-6 space-y-2">
+          <input 
+            v-model="manualIp"
+            type="text" 
+            placeholder="e.g. 192.168.0.100" 
+            class="w-full bg-surface-variant/30 border border-outline-variant rounded-xl px-4 py-3 font-body-lg text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all placeholder:text-on-surface-variant/50"
+            @keyup.enter="connectManually"
+          />
+          <p v-if="manualConnectError" class="text-error font-body-sm px-1">{{ manualConnectError }}</p>
+        </div>
+
+        <div class="flex justify-end gap-3 mt-4">
+          <AppButton variant="ghost" @click="showManualConnect = false" :disabled="isConnecting">Cancel</AppButton>
+          <AppButton variant="primary" @click="connectManually" :disabled="isConnecting || !manualIp">
+            {{ isConnecting ? 'Connecting...' : 'Connect' }}
+          </AppButton>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 

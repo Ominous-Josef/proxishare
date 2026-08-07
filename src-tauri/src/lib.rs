@@ -58,6 +58,35 @@ async fn start_discovery(state: tauri::State<'_, AppState>) -> Result<bool, Stri
 }
 
 #[tauri::command]
+async fn add_device_manually(ip: String, state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    let port = 51731; // Default port
+    
+    // Get our device info
+    let my_id = state.security.read().await.get_device_id().to_string();
+    let my_name = state.settings.read().await.get_settings().device_name.clone();
+
+    // Get transfer manager to ping the device
+    let transfer = state.transfer.read().await.clone();
+    if let Some(tm) = transfer {
+        match tm.ping_device(&ip, port, my_id, my_name).await {
+            Ok((device_id, device_name)) => {
+                // If ping succeeds, inject it into discovery
+                if let Some(discovery) = state.discovery.read().await.as_ref() {
+                    discovery.add_manual_device(device_id.clone(), device_name.clone(), ip.clone(), port).await;
+                    println!("[mDNS] Manually added device: {} ({}) at {}", device_name, device_id, ip);
+                    return Ok(true);
+                }
+            },
+            Err(e) => {
+                println!("[mDNS] Failed to connect manually to {}: {:?}", ip, e);
+                return Err(format!("Could not connect to {}: {:?}", ip, e));
+            }
+        }
+    }
+    Err("Transfer manager not initialized".to_string())
+}
+
+#[tauri::command]
 async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec<Device>, String> {
     let discovery = state.discovery.read().await.clone();
     if let Some(ds) = discovery {
@@ -706,6 +735,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_discovery,
             get_discovered_devices,
+            add_device_manually,
             send_file,
             get_trusted_devices,
             is_device_trusted,

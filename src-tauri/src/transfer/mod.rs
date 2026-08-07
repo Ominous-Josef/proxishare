@@ -140,6 +140,58 @@ impl TransferManager {
         Ok(())
     }
 
+    pub async fn ping_device(
+        &self,
+        target_ip: &str,
+        target_port: u16,
+        my_id: String,
+        my_name: String,
+    ) -> Result<(String, String), crate::GenericError> {
+        let addr = format!("{}:{}", target_ip, target_port).parse()?;
+        let connecting = self.endpoint.connect(addr, "proxishare.local")?;
+
+        let connection = match tokio::time::timeout(std::time::Duration::from_secs(5), connecting).await {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(e)) => return Err(format!("Connection failed: {}", e).into()),
+            Err(_) => return Err("Connection timed out".into()),
+        };
+
+        let (mut send_stream, mut recv_stream) = connection.open_bi().await?;
+
+        let msg = crate::transfer::protocol::MessageType::Hello {
+            device_id: my_id,
+            device_name: my_name,
+        };
+
+        let data = bincode::serialize(&msg)?;
+        let len = data.len() as u32;
+        send_stream.write_all(&len.to_be_bytes()).await?;
+        send_stream.write_all(&data).await?;
+
+        // Wait for HelloAck
+        let mut len_buf = [0u8; 4];
+        recv_stream.read_exact(&mut len_buf).await?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+
+        let mut ack_data = vec![0u8; len];
+        recv_stream.read_exact(&mut ack_data).await?;
+
+        let ack_msg = bincode::deserialize(&ack_data)?;
+        
+        let result = match ack_msg {
+            crate::transfer::protocol::MessageType::HelloAck { device_id, device_name } => {
+                Ok((device_id, device_name))
+            },
+            _ => Err("Invalid response from device".into()),
+        };
+
+        send_stream.finish()?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        connection.close(quinn::VarInt::from_u32(0), b"ping complete");
+
+        result
+    }
+
     pub async fn send_file(
         &self,
         transfer_id: String,

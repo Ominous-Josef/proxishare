@@ -370,6 +370,21 @@ impl DiscoveryService {
     pub fn get_my_name(&self) -> String {
         self.device_name.read().clone()
     }
+
+    pub async fn add_manual_device(&self, id: String, name: String, ip: String, port: u16) {
+        let mut devices = self.discovered_devices.write().await;
+        devices.insert(
+            id.clone(),
+            Device {
+                id,
+                name,
+                ip: ip.clone(),
+                all_ips: vec![ip],
+                port,
+                last_seen: Utc::now().timestamp(),
+            },
+        );
+    }
 }
 
 /// Select the best IP address from a set of addresses

@@ -22,7 +22,10 @@ pub enum MessageType {
         device_id: String,
         device_name: String,
     },
-    HelloAck,
+    HelloAck {
+        device_id: String,
+        device_name: String,
+    },
 
     // File transfer negotiation
     FileOffer {

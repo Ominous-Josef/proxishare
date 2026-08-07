@@ -93,6 +93,35 @@ device_id: current_device_id.clone(),
                         }
                     };
                     match msg {
+                        MessageType::Hello { device_id, device_name } => {
+                            use tauri::Manager;
+                            let state = self.app_handle.state::<crate::AppState>();
+                            
+                            // 1. Get our own details
+                            let my_id = {
+                                let security = self.security.read().await;
+                                security.get_device_id().to_string()
+                            };
+                            let my_name = {
+                                let settings = state.settings.read().await;
+                                settings.get_settings().device_name.clone()
+                            };
+                            
+                            // 2. Respond with HelloAck
+                            let _ = Self::write_message(
+                                &mut send_stream,
+                                &MessageType::HelloAck { device_id: my_id, device_name: my_name }
+                            ).await;
+                            
+                            // 3. Inject sender into discovery list so we can see them too!
+                            if let Some(discovery) = state.discovery.read().await.as_ref() {
+                                let ip = self.connection.remote_address().ip().to_string();
+                                discovery.add_manual_device(device_id.clone(), device_name.clone(), ip, 51731).await;
+                            }
+                            
+                            println!("[Receiver] Handled Hello ping from {}: {}", device_name, device_id);
+                            return Err("Ping connection closed".into());
+                        }
                         MessageType::FileOffer {
                             transfer_id,
                             metadata,
