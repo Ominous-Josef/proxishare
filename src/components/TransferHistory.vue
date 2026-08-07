@@ -13,11 +13,13 @@ import {
   Upload,
   Download
 } from "lucide-vue-next";
+import AppButton from "./AppButton.vue";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
   TransferRecord,
   useFileTransfer,
 } from "../composables/useFileTransfer";
+import { useToast } from "../composables/useToast";
 import { DateTime } from "luxon";
 
 const props = defineProps<{
@@ -27,6 +29,7 @@ const props = defineProps<{
 
 const { history, loadHistory, loadDeviceHistory, clearHistory } =
   useFileTransfer();
+const { addToast } = useToast();
 const deviceHistory = ref<TransferRecord[]>([]);
 const isLoading = ref(false);
 const showClearConfirm = ref(false);
@@ -46,6 +49,8 @@ const loadData = async () => {
     } else {
       await loadHistory();
     }
+  } catch (error) {
+    addToast("Failed to load history: " + String(error), "error");
   } finally {
     isLoading.value = false;
   }
@@ -91,7 +96,7 @@ const handleClearHistory = async () => {
 </script>
 
 <template>
-  <div class="w-full glass-panel rounded-2xl flex flex-col overflow-hidden select-none">
+  <div class="w-full bg-surface-container-low border border-white/5 rounded-2xl flex flex-col overflow-hidden select-none">
     
     <!-- Header -->
     <div class="flex justify-between items-center px-6 py-4 border-b border-white/5 bg-surface-container/50">
@@ -100,22 +105,24 @@ const handleClearHistory = async () => {
         {{ deviceId ? `History with ${deviceName || "Device"}` : "All Transfer History" }}
       </h3>
       <div class="flex items-center gap-2">
-        <button
-          class="p-2 rounded-lg bg-surface-container hover:bg-surface-variant text-on-surface-variant hover:text-on-surface border border-white/5 transition-colors disabled:opacity-50"
+        <AppButton
+          variant="surface"
+          size="icon"
           @click="loadData"
           :disabled="isLoading"
           title="Refresh"
         >
           <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': isLoading }" />
-        </button>
-        <button
+        </AppButton>
+        <AppButton
           v-if="displayHistory.length > 0 && !deviceId"
-          class="p-2 rounded-lg bg-surface-container hover:bg-error-container/20 text-on-surface-variant hover:text-error border border-white/5 transition-colors"
+          variant="danger-ghost"
+          size="icon"
           @click="showClearConfirm = true"
           title="Clear history"
         >
           <Trash2 class="w-4 h-4" />
-        </button>
+        </AppButton>
       </div>
     </div>
 
@@ -124,13 +131,13 @@ const handleClearHistory = async () => {
       <div v-if="showClearConfirm" class="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click.self="showClearConfirm = false">
         <div class="bg-surface-container-high rounded-xl p-6 border border-white/10 shadow-2xl text-center max-w-sm w-full mx-4">
           <p class="text-on-surface mb-6 font-medium">Clear all transfer history?</p>
-          <div class="flex gap-3 justify-center">
-            <button class="px-4 py-2 rounded-lg bg-surface-container border border-outline-variant/30 text-on-surface-variant hover:bg-surface-variant transition-colors" @click="showClearConfirm = false">
+          <div class="flex gap-3 w-full pt-2">
+            <AppButton variant="surface" class="flex-1" @click="showClearConfirm = false">
               Cancel
-            </button>
-            <button class="px-4 py-2 rounded-lg bg-danger text-white hover:bg-danger/90 transition-colors font-medium" @click="handleClearHistory">
+            </AppButton>
+            <AppButton variant="danger" class="flex-1" @click="handleClearHistory">
               Clear All
-            </button>
+            </AppButton>
           </div>
         </div>
       </div>

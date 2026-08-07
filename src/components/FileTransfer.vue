@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { open } from "@tauri-apps/plugin-dialog";
 import { useFileTransfer } from "../composables/useFileTransfer";
+import { useToast } from "../composables/useToast";
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { CloudUpload, FolderUp, MonitorSmartphone, Laptop, FileUp, X, Upload, Pause, Play, PackageOpen } from "lucide-vue-next";
+import AppButton from "./AppButton.vue";
 
 const props = defineProps<{
   deviceId: string | null;
@@ -14,7 +16,7 @@ const props = defineProps<{
 
 const { sendFile, transfers, cancelTransfer, pauseTransfer, resumeTransfer } = useFileTransfer();
 const isSending = ref(false);
-const statusMessage = ref<string | null>(null);
+const { addToast } = useToast();
 const isDragOver = ref(false);
 
 const activeDeviceTransfers = computed(() => {
@@ -40,8 +42,7 @@ const formatTime = (secs?: number) => {
 
 const selectAndSend = async (isFolder: boolean = false) => {
   if (!props.deviceId || !props.targetIp || !props.targetPort) {
-    statusMessage.value = "Please select a device below first.";
-    setTimeout(() => { statusMessage.value = null; }, 3000);
+    addToast("Please select a device below first.", "info");
     return;
   }
 
@@ -63,8 +64,7 @@ const selectAndSend = async (isFolder: boolean = false) => {
     }
   } catch (error) {
     if (!String(error).includes("cancelled")) {
-      statusMessage.value = "Failed: " + String(error);
-      setTimeout(() => { statusMessage.value = null; }, 5000);
+      addToast("Failed: " + String(error), "error", 8000);
     }
   } finally {
     isSending.value = false;
@@ -115,7 +115,7 @@ onUnmounted(() => {
     <!-- Dropzone Area -->
     <div 
       class="relative w-full flex flex-col items-center justify-center py-8 overflow-hidden rounded-3xl transition-all duration-300 shadow-inner"
-      :class="isDragOver ? 'bg-primary/10 border-2 border-dashed border-primary shadow-[0_0_40px_theme(\'colors.primary\')]' : 'bg-surface-container-lowest/30 border border-white/10 hover:bg-surface-container-low/40'"
+      :class="isDragOver ? 'bg-primary/10 border-2 border-dashed border-primary shadow-[0_0_40px_theme(\'colors.primary\')]' : 'bg-surface-container-low border border-white/5 hover:bg-surface-container'"
     >
       <!-- Subtle background texture/radial glow -->
       <div class="absolute inset-0 pointer-events-none opacity-[0.1]" style="background: radial-gradient(circle at 50% 50%, theme('colors.primary-container') 0%, transparent 60%);"></div>
@@ -187,24 +187,24 @@ onUnmounted(() => {
              
              <!-- Manual Send Buttons -->
              <div class="flex gap-3 mt-4">
-                <button 
+                <AppButton 
                   @click="selectAndSend(false)" 
                   :disabled="!deviceId"
-                  class="px-5 py-2 rounded-full font-body-sm font-semibold flex items-center gap-2 transition-all duration-300"
-                  :class="deviceId ? 'bg-primary/20 text-primary hover:bg-primary/30 active:scale-95' : 'bg-surface-variant text-on-surface-variant opacity-50 cursor-not-allowed'"
+                  variant="primary"
+                  :class="!deviceId ? 'opacity-50 cursor-not-allowed' : ''"
                 >
                   <Upload class="w-4 h-4" />
                   Send File
-                </button>
-                <button 
+                </AppButton>
+                <AppButton 
                   @click="selectAndSend(true)" 
                   :disabled="!deviceId"
-                  class="px-5 py-2 rounded-full font-body-sm font-semibold flex items-center gap-2 transition-all duration-300 border border-outline-variant/30"
-                  :class="deviceId ? 'bg-surface-container-low text-on-surface hover:bg-surface-bright active:scale-95' : 'bg-surface-variant/20 text-on-surface-variant opacity-50 cursor-not-allowed'"
+                  variant="secondary"
+                  :class="!deviceId ? 'opacity-50 cursor-not-allowed' : ''"
                 >
                   <FolderUp class="w-4 h-4" />
                   Send Folder
-                </button>
+                </AppButton>
              </div>
            </div>
          </Transition>
@@ -241,15 +241,15 @@ onUnmounted(() => {
             </div>
             
             <div class="flex items-center gap-1.5 shrink-0 ml-4">
-              <button v-if="transfer.status === 'in_progress'" @click="pauseTransfer(transfer.id)" class="text-on-surface hover:text-accent-orange bg-surface-variant/30 hover:bg-accent-orange/20 p-2 rounded-full transition-colors" title="Pause">
+              <AppButton v-if="transfer.status === 'in_progress'" @click="pauseTransfer(transfer.id)" variant="surface-variant" size="icon" title="Pause">
                 <Pause class="w-4 h-4 fill-current" />
-              </button>
-              <button v-else-if="transfer.status === 'paused'" @click="resumeTransfer(transfer.id)" class="text-on-surface hover:text-success bg-surface-variant/30 hover:bg-success/20 p-2 rounded-full transition-colors" title="Resume">
+              </AppButton>
+              <AppButton v-else-if="transfer.status === 'paused'" @click="resumeTransfer(transfer.id)" variant="surface-variant" size="icon" title="Resume">
                 <Play class="w-4 h-4 fill-current" />
-              </button>
-              <button @click="cancelTransfer(transfer.id)" class="text-on-surface hover:text-danger bg-surface-variant/30 hover:bg-danger/20 p-2 rounded-full transition-colors" title="Cancel">
+              </AppButton>
+              <AppButton @click="cancelTransfer(transfer.id)" variant="danger" size="icon" title="Cancel">
                 <X class="w-4 h-4" />
-              </button>
+              </AppButton>
             </div>
           </div>
           
@@ -266,13 +266,6 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
-
-    <!-- Error Toast -->
-    <Transition name="fade">
-      <div v-if="statusMessage" class="fixed bottom-8 left-1/2 -translate-x-1/2 bg-error-container/90 backdrop-blur-md text-error border border-error/30 px-6 py-3 rounded-full text-sm font-medium z-50 shadow-2xl">
-        {{ statusMessage }}
-      </div>
-    </Transition>
 
   </div>
 </template>

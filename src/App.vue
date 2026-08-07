@@ -2,17 +2,23 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watchEffect } from "vue";
 import DeviceList from "./components/DeviceList.vue";
 import FileTransfer from "./components/FileTransfer.vue";
 import PairingDialog from "./components/PairingDialog.vue";
 import SettingsView from "./components/SettingsView.vue";
 import TransferHistory from "./components/TransferHistory.vue";
 import FileAcceptDialog from "./components/FileAcceptDialog.vue";
+import AppButton from "./components/AppButton.vue";
+import ToastNotification from "./components/ToastNotification.vue";
 import { useDevices, type Device } from "./composables/useDevices";
+import { useToast } from "./composables/useToast";
+import { useSettings } from "./composables/useSettings";
 import { Share2, History, Settings, Upload, Download, X, Laptop, Radar } from "lucide-vue-next";
 
 const { devices, isDiscovering, refreshDevices, triggerScan } = useDevices();
+const { addToast } = useToast();
+const { settings, loadSettings } = useSettings();
 const selectedId = ref<string | null>(null);
 const currentView = ref<"devices" | "history" | "settings">("devices");
 
@@ -57,7 +63,7 @@ const handlePair = async (id: string) => {
       await refreshDevices();
     } catch (e) {
       console.error("[Pairing] Failed:", e);
-      alert("Failed to pair device: " + e);
+      addToast("Failed to pair device: " + e, "error");
     }
   }
 };
@@ -75,16 +81,39 @@ const handlePairConfirm = async (code: string) => {
         port: pairingRequest.value.port,
       });
       pairingRequest.value.isOpen = false;
-      alert(`Success! Device paired using code ${code}`);
+      addToast(`Success! Device paired using code ${code}`, "success");
       await refreshDevices();
     } catch (e) {
       console.error("[Pairing] Accept failed:", e);
-      alert("Failed to pair device: " + e);
+      addToast("Failed to pair device: " + e, "error");
     }
   }
 };
 
 onMounted(async () => {
+  await loadSettings();
+  
+  const applyTheme = (theme: string) => {
+    const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    if (isDark) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  };
+
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (settings.value.theme === 'system') {
+      applyTheme('system');
+    }
+  });
+
+  watchEffect(() => {
+    if (settings.value) {
+      applyTheme(settings.value.theme);
+    }
+  });
+
   await listen("pairing-request", (event: any) => {
     pairingRequest.value = {
       device: event.payload.device,
@@ -199,6 +228,7 @@ onMounted(async () => {
 
 <template>
   <div class="h-screen w-screen flex bg-surface-dim text-on-background overflow-hidden font-body-md select-none">
+    <ToastNotification />
     
     <!-- Side Rail Navigation -->
     <nav class="w-16 bg-surface-container-low border-r border-outline-variant/20 flex flex-col items-center py-4 z-10 shrink-0">
@@ -262,7 +292,7 @@ onMounted(async () => {
               :target-ip="selectedDevice.ip"
               :target-port="selectedDevice.port"
             />
-            <div v-else class="w-full h-[320px] glass-panel rounded-3xl flex flex-col items-center justify-center p-6 drop-zone-glow group relative overflow-hidden shrink-0 border border-white/5 shadow-2xl">
+            <div v-else class="w-full h-[320px] bg-surface-container-low rounded-3xl flex flex-col items-center justify-center p-6 drop-zone-glow group relative overflow-hidden shrink-0 border border-white/5 shadow-2xl">
               <div class="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-50"></div>
               
               <div class="relative w-24 h-24 mb-6 flex items-center justify-center">
@@ -312,35 +342,36 @@ onMounted(async () => {
 
       </div>
 
-      <!-- Persistent Widget: Transfer Queue (Bottom Right) -->
-      <div v-if="Object.keys(activeTransfers).length > 0" class="absolute bottom-6 right-6 w-80 z-40 flex flex-col gap-2">
-        <div class="glass-panel rounded-xl p-4 shadow-2xl border border-white/10">
-          <div class="flex items-center justify-between mb-3">
-            <h4 class="text-label-caps font-semibold text-on-surface tracking-widest uppercase">Active Transfers</h4>
-          </div>
-          
-          <div class="flex flex-col gap-3">
-            <div v-for="(t, id) in activeTransfers" :key="id" class="flex flex-col gap-1.5 bg-surface-container-low/50 p-2.5 rounded-lg">
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-2 overflow-hidden">
-                  <Upload v-if="t.direction === 'send'" class="text-primary w-4 h-4 shrink-0" />
-                  <Download v-else class="text-primary w-4 h-4 shrink-0" />
-                  <span class="text-body-sm text-on-surface truncate">{{ t.fileName }}</span>
-                </div>
-                <span class="text-xs font-medium text-on-surface-variant shrink-0">{{ t.progress.toFixed(0) }}%</span>
+    </main>
+
+    <!-- Persistent Widget: Transfer Queue (Bottom Right) -->
+    <div v-if="Object.keys(activeTransfers).length > 0" class="fixed bottom-6 right-6 w-80 z-40 flex flex-col gap-2">
+      <div class="bg-surface-container-highest/90 backdrop-blur-md rounded-xl p-4 shadow-2xl border border-white/10">
+        <div class="flex items-center justify-between mb-3">
+          <h4 class="text-label-caps font-semibold text-on-surface tracking-widest uppercase">Active Transfers</h4>
+        </div>
+        
+        <div class="flex flex-col gap-3">
+          <div v-for="(t, id) in activeTransfers" :key="id" class="flex flex-col gap-1.5 bg-surface-container-lowest/50 p-2.5 rounded-lg border border-white/5">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2 overflow-hidden">
+                <Upload v-if="t.direction === 'send'" class="text-primary w-4 h-4 shrink-0" />
+                <Download v-else class="text-primary w-4 h-4 shrink-0" />
+                <span class="text-body-sm text-on-surface truncate">{{ t.fileName }}</span>
               </div>
-              <div class="w-full bg-surface-container-highest rounded-full h-1 overflow-hidden">
-                <div :class="[t.status === 'completed' ? 'bg-success' : t.status === 'failed' ? 'bg-danger' : 'bg-primary']" class="h-full transition-all duration-300" :style="{ width: t.progress + '%' }"></div>
-              </div>
-              <div class="flex justify-between text-[10px] text-on-surface-variant mt-0.5">
-                <span>{{ t.status === 'in_progress' ? formatSpeed(t.speedBps) : t.status }}</span>
-                <span v-if="t.status === 'in_progress' && t.timeRemainingSec > 0">{{ formatTime(t.timeRemainingSec) }} left</span>
-              </div>
+              <span class="text-xs font-medium text-on-surface-variant shrink-0">{{ t.progress.toFixed(0) }}%</span>
+            </div>
+            <div class="w-full bg-surface-container-highest rounded-full h-1 overflow-hidden">
+              <div :class="[t.status === 'completed' ? 'bg-success' : t.status === 'failed' ? 'bg-danger' : 'bg-primary']" class="h-full transition-all duration-300" :style="{ width: t.progress + '%' }"></div>
+            </div>
+            <div class="flex justify-between text-[10px] text-on-surface-variant mt-0.5">
+              <span>{{ t.status === 'in_progress' ? formatSpeed(t.speedBps) : t.status }}</span>
+              <span v-if="t.status === 'in_progress' && t.timeRemainingSec > 0">{{ formatTime(t.timeRemainingSec) }} left</span>
             </div>
           </div>
         </div>
       </div>
-    </main>
+    </div>
 
     <!-- Modals -->
     <PairingDialog
@@ -367,10 +398,10 @@ onMounted(async () => {
     <!-- Sender Pairing Code Modal -->
     <Transition name="fade">
       <div v-if="senderPairingCode" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click.self="senderPairingCode = null">
-        <div class="glass-modal rounded-2xl w-full max-w-[400px] p-8 flex flex-col items-center text-center shadow-2xl relative border border-white/10">
-          <button class="absolute top-4 right-4 text-on-surface-variant hover:text-on-surface p-1 rounded-md hover:bg-surface-variant/50 transition-colors" @click="senderPairingCode = null">
+        <div class="bg-surface-container rounded-3xl p-8 border border-white/10 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.5)] max-w-sm w-full mx-4 flex flex-col items-center text-center relative overflow-hidden">
+          <AppButton class="absolute top-4 right-4" variant="ghost" size="icon" @click="senderPairingCode = null">
             <X class="w-5 h-5" />
-          </button>
+          </AppButton>
           
           <div class="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4 border border-primary/20 text-primary">
             <Laptop class="w-6 h-6 stroke-[1.5]" />
@@ -383,9 +414,9 @@ onMounted(async () => {
             <span class="text-[36px] font-code-display text-primary tracking-[0.25em] font-bold">{{ senderPairingCode }}</span>
           </div>
           
-          <button class="w-full py-2.5 rounded-xl bg-surface-container-high hover:bg-surface-variant text-on-surface transition-colors text-body-sm font-semibold border border-outline-variant/20" @click="senderPairingCode = null">
-            Done
-          </button>
+          <AppButton class="w-full" variant="surface" @click="senderPairingCode = null">
+            Cancel Pairing
+          </AppButton>
         </div>
       </div>
     </Transition>

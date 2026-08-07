@@ -1,6 +1,7 @@
 pub mod crypto;
 pub mod db;
 pub mod discovery;
+pub mod settings;
 pub mod sync;
 pub mod transfer;
 
@@ -15,6 +16,7 @@ use tauri::Manager;
 use tokio::sync::RwLock;
 
 use crate::crypto::security::SecurityService;
+use crate::settings::{Settings, SettingsManager};
 use crate::sync::SyncState;
 use std::collections::HashMap;
 
@@ -39,6 +41,7 @@ pub struct AppState {
     pub security: Arc<RwLock<SecurityService>>,
     pub database: Arc<RwLock<Option<Database>>>,
     pub transfers: TransferRegistry,
+    pub settings: Arc<RwLock<SettingsManager>>,
 }
 
 #[tauri::command]
@@ -545,19 +548,47 @@ async fn clear_transfer_history(state: tauri::State<'_, AppState>) -> Result<(),
     }
 }
 
+#[tauri::command]
+async fn get_settings(state: tauri::State<'_, AppState>) -> Result<Settings, String> {
+    let settings = state.settings.read().await;
+    Ok(settings.get_settings())
+}
+
+#[tauri::command]
+async fn update_settings(
+    settings: Settings,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mut settings_manager = state.settings.write().await;
+    
+    // Check if device name changed to update discovery service
+    let old_name = settings_manager.get_settings().device_name;
+    settings_manager.update_settings(settings.clone())?;
+    
+    if old_name != settings.device_name {
+        let discovery_lock = state.discovery.read().await;
+        if let Some(discovery) = &*discovery_lock {
+            if let Err(e) = discovery.update_name(settings.device_name.clone()) {
+                println!("[Settings] Failed to update discovery name: {}", e);
+            }
+        }
+    }
+    
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             println!("Setup hook started");
             let app_handle = app.handle().clone();
-            let downloads_dir = app_handle
+            let default_downloads_dir = app_handle
                 .path()
                 .download_dir()
-                .unwrap_or_else(|_| PathBuf::from("./downloads"));
-            if !downloads_dir.exists() {
-                let _ = std::fs::create_dir_all(&downloads_dir);
-            }
+                .unwrap_or_else(|_| PathBuf::from("./downloads"))
+                .to_string_lossy()
+                .to_string();
 
             // Initialize Transfer Registry (Status tracking)
             let transfers: TransferRegistry = Arc::new(RwLock::new(HashMap::new()));
@@ -581,6 +612,19 @@ pub fn run() {
                 id
             };
 
+            let default_device_name = hostname::get()
+                .ok()
+                .and_then(|h| h.into_string().ok())
+                .unwrap_or_else(|| "ProxiNode".to_string());
+
+            let settings_manager = SettingsManager::new(
+                app_data_dir.clone(),
+                default_device_name,
+                default_downloads_dir,
+            );
+            let initial_settings = settings_manager.get_settings();
+            let settings = Arc::new(RwLock::new(settings_manager));
+
             let security = Arc::new(RwLock::new(SecurityService::new(app_data_dir.clone(), device_id.clone())));
 
             // Initialize Database
@@ -600,10 +644,7 @@ pub fn run() {
             let database = Arc::new(RwLock::new(database_opt));
 
             // Initialize Device ID and Name
-            let device_name = hostname::get()
-                .ok()
-                .and_then(|h| h.into_string().ok())
-                .unwrap_or_else(|| "ProxiNode".to_string());
+            let device_name = initial_settings.device_name;
 
             println!("Initializing services with block_on");
             let (discovery, transfer_manager) = tauri::async_runtime::block_on(async {
@@ -616,7 +657,7 @@ pub fn run() {
                     database.clone(),
                     transfers.clone(),
                     device_id.clone(),
-                    device_name.clone(),
+                    settings.clone(),
                     security.clone(),
                 )?;
                 println!("Inside block_on: TransferManager initialized");
@@ -635,9 +676,8 @@ pub fn run() {
 
             println!("Starting listening and broadcasting");
             let tm_clone = Arc::clone(&transfer_manager);
-            let ds_downloads_dir = downloads_dir.clone();
             tauri::async_runtime::spawn(async move {
-                tm_clone.start_listening(ds_downloads_dir).await;
+                tm_clone.start_listening().await;
             });
 
             let _ = discovery.start_broadcasting();
@@ -650,6 +690,7 @@ pub fn run() {
                 security,
                 database: database.clone(),
                 transfers,
+                settings,
             };
             app.manage(app_state);
 
@@ -681,7 +722,9 @@ pub fn run() {
             cancel_transfer,
             sync_history,
             accept_file_offer,
-            reject_file_offer
+            reject_file_offer,
+            get_settings,
+            update_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

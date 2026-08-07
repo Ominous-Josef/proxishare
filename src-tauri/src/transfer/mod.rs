@@ -16,7 +16,7 @@ pub struct TransferManager {
     database: Arc<RwLock<Option<crate::db::Database>>>,
     transfers: crate::TransferRegistry,
     device_id: String,
-    device_name: String,
+    settings: Arc<RwLock<crate::settings::SettingsManager>>,
     security: Arc<RwLock<crate::crypto::security::SecurityService>>,
 }
 
@@ -27,7 +27,7 @@ impl TransferManager {
         database: Arc<RwLock<Option<crate::db::Database>>>,
         transfers: crate::TransferRegistry,
         device_id: String,
-        device_name: String,
+        settings: Arc<RwLock<crate::settings::SettingsManager>>,
         security: Arc<RwLock<crate::crypto::security::SecurityService>>,
     ) -> Result<Self, crate::GenericError> {
         let cert_manager = CertificateManager::generate_self_signed()?;
@@ -54,20 +54,24 @@ impl TransferManager {
             database,
             transfers,
             device_id,
-            device_name,
+            settings,
             security,
         })
     }
 
-    pub async fn start_listening(&self, save_dir: PathBuf) {
+    pub async fn start_listening(&self) {
         println!(
-            "[Transfer] Server listening on port, save dir: {:?}",
-            save_dir
+            "[Transfer] Server listening on port"
         );
         let app_handle = self.app_handle.clone();
         while let Some(conn) = self.endpoint.accept().await {
             println!("[Transfer] Incoming connection accepted");
-            let save_dir = save_dir.clone();
+            let save_dir_str = self.settings.read().await.get_settings().download_dir;
+            let save_dir = PathBuf::from(save_dir_str);
+            if !save_dir.exists() {
+                let _ = std::fs::create_dir_all(&save_dir);
+            }
+            
             let app_handle = app_handle.clone();
             let database = self.database.clone();
             let transfers = self.transfers.clone();
@@ -172,11 +176,13 @@ impl TransferManager {
                 }
             };
 
+        let sender_name = self.settings.read().await.get_settings().device_name;
+
         let sender = FileSender::new(
             connection,
             self.app_handle.clone(),
             self.device_id.clone(),
-            self.device_name.clone(),
+            sender_name,
         );
         println!("[Transfer] Starting file transfer with ID: {}", transfer_id);
 

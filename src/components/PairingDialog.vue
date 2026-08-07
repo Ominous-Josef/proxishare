@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import { Key, X } from "lucide-vue-next";
+import AppButton from "./AppButton.vue";
 
 const props = defineProps<{
   isOpen: boolean;
@@ -71,20 +72,24 @@ watch(
         </div>
 
         <!-- Actions -->
-        <div class="w-full relative z-10 flex gap-3">
-          <button 
+        <div class="flex gap-4 w-full mt-2 pt-6 border-t border-white/5">
+          <AppButton 
+            class="flex-1 uppercase tracking-wider font-semibold font-label-caps"
+            variant="outline"
+            size="lg"
             @click="emit('close')"
-            class="flex-1 py-3.5 px-6 rounded-full border border-outline-variant/50 text-on-surface hover:bg-white/5 transition-all duration-300 font-label-caps text-label-caps uppercase tracking-wider font-semibold"
           >
             Cancel
-          </button>
-          <button
-            class="flex-1 py-3.5 px-6 rounded-full bg-primary text-white transition-all font-label-caps text-label-caps uppercase tracking-wider font-bold disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-fixed-dim hover:shadow-[0_0_20px_rgba(208,188,255,0.4)]"
+          </AppButton>
+          <AppButton
+            class="flex-1 uppercase tracking-wider font-bold font-label-caps"
+            variant="primary"
+            size="lg"
             :disabled="code.length !== 6"
             @click="emit('confirm', code)"
           >
             Confirm
-          </button>
+          </AppButton>
         </div>
 
         <!-- Progress indicator ring around the modal edge (aesthetic) -->

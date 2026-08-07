@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, watch } from "vue";
 import { FileDown, X } from "lucide-vue-next";
+import AppButton from "./AppButton.vue";
 
 const props = defineProps<{
   isOpen: boolean;
@@ -33,9 +34,11 @@ const formatTime = (seconds: number) => {
   return `${m}:${s.toString().padStart(2, "0")}`;
 };
 
-onMounted(() => {
-  if (props.isOpen) {
+watch(() => props.isOpen, (val) => {
+  if (val) {
     startTimer();
+  } else {
+    stopTimer();
   }
 });
 
@@ -91,13 +94,21 @@ const stopTimer = () => {
           Auto-rejecting in {{ formatTime(timeLeft) }}
         </p>
 
-        <div class="flex w-full gap-3">
-          <button class="flex-1 py-3 rounded-xl bg-surface-container hover:bg-error-container/20 text-on-surface-variant hover:text-danger transition-colors text-body-md font-medium border border-outline-variant/20" @click="emit('reject', transferId)">
+        <div class="flex gap-4 w-full pt-4 border-t border-white/5 mt-2">
+          <AppButton 
+            class="flex-1"
+            variant="surface"
+            @click="emit('reject', transferId)"
+          >
             Decline
-          </button>
-          <button class="flex-1 py-3 rounded-xl bg-primary hover:bg-primary-fixed-dim text-white transition-all text-body-md font-medium shadow-lg shadow-primary/20" @click="emit('accept', transferId)">
+          </AppButton>
+          <AppButton 
+            class="flex-1"
+            variant="primary"
+            @click="emit('accept', transferId)"
+          >
             Accept
-          </button>
+          </AppButton>
         </div>
       </div>
     </div>

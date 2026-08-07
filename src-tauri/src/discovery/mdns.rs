@@ -24,9 +24,11 @@ pub struct Device {
     pub last_seen: i64,
 }
 
+use parking_lot::RwLock as SyncRwLock;
+
 pub struct DiscoveryService {
     device_id: String,
-    device_name: String,
+    device_name: SyncRwLock<String>,
     port: u16,
     mdns: ServiceDaemon,
     discovered_devices: Arc<RwLock<HashMap<String, Device>>>,
@@ -42,7 +44,7 @@ impl DiscoveryService {
 
         Ok(Self {
             device_id,
-            device_name,
+            device_name: SyncRwLock::new(device_name),
             port,
             mdns,
             discovered_devices: Arc::new(RwLock::new(HashMap::new())),
@@ -51,7 +53,8 @@ impl DiscoveryService {
 
     pub fn start_broadcasting(&self) -> Result<(), crate::GenericError> {
         let service_type = "_proxishare._tcp.local.";
-        let instance_name = format!("{}_{}", self.device_name, &self.device_id[..8]);
+        let current_name = self.device_name.read().clone();
+        let instance_name = format!("{}_{}", current_name, &self.device_id[..8]);
 
         // Get all local IPs to register with mDNS
         let local_ips = get_local_ips();
@@ -60,7 +63,7 @@ impl DiscoveryService {
 
         let mut properties = HashMap::new();
         properties.insert("id".to_string(), self.device_id.clone());
-        properties.insert("name".to_string(), self.device_name.clone());
+        properties.insert("name".to_string(), current_name);
         // Store all IPs in properties for cross-interface discovery
         properties.insert("ips".to_string(), local_ips.join(","));
 
@@ -80,6 +83,26 @@ impl DiscoveryService {
             "[mDNS] Service registered: {} on port {}",
             instance_name, self.port
         );
+        Ok(())
+    }
+
+    pub fn update_name(&self, new_name: String) -> Result<(), crate::GenericError> {
+        let service_type = "_proxishare._tcp.local.";
+        let old_name = self.device_name.read().clone();
+        
+        if old_name == new_name {
+            return Ok(());
+        }
+
+        // Unregister the old service
+        let old_instance_name = format!("{}_{}", old_name, &self.device_id[..8]);
+        let old_fullname = format!("{}.{}", old_instance_name, service_type);
+        println!("[mDNS] Unregistering old name: {}", old_fullname);
+        let _ = self.mdns.unregister(&old_fullname);
+
+        // Update name and re-broadcast
+        *self.device_name.write() = new_name;
+        self.start_broadcasting()?;
         Ok(())
     }
 
@@ -335,6 +358,10 @@ impl DiscoveryService {
 
     pub fn get_my_id(&self) -> String {
         self.device_id.clone()
+    }
+    
+    pub fn get_my_name(&self) -> String {
+        self.device_name.read().clone()
     }
 }
 

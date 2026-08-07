@@ -1,170 +1,58 @@
 <script setup lang="ts">
 import { useSync } from "../composables/useSync";
+import { FolderSync, ShieldCheck } from "lucide-vue-next";
+import AppButton from "./AppButton.vue";
 
 const { sharedFolder, isSyncing, selectFolder } = useSync();
 </script>
 
 <template>
-  <div class="sync-settings">
-    <div class="header">
-      <h3>Auto-Sync</h3>
-      <div class="status-badge" :class="{ active: sharedFolder }">
+  <div class="w-full flex flex-col gap-6">
+    <div class="flex items-center justify-between">
+      <h4 class="text-body-md font-medium text-on-surface">Auto-Sync</h4>
+      <div 
+        class="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded-full border"
+        :class="sharedFolder ? 'bg-success/10 text-success border-success/20' : 'bg-surface-variant text-on-surface-variant border-white/5'"
+      >
         {{ sharedFolder ? "Enabled" : "Disabled" }}
       </div>
     </div>
 
-    <div class="folder-selection">
-      <div class="info">
-        <label>Shared Folder</label>
-        <p class="description">
+    <div class="flex flex-col gap-4">
+      <div>
+        <label class="text-body-md font-medium text-on-surface block">Shared Folder</label>
+        <p class="text-body-sm text-on-surface-variant mt-1">
           Select a folder to keep in sync across your devices.
         </p>
       </div>
 
-      <div class="path-display" v-if="sharedFolder">
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path
-            d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
-          ></path>
-        </svg>
-        <span class="path">{{ sharedFolder }}</span>
+      <div v-if="sharedFolder" class="flex items-center gap-3 bg-surface-container border border-outline-variant/30 rounded-xl p-3 text-on-surface-variant font-code-display text-[13px] overflow-hidden shadow-inner">
+        <FolderSync class="w-4 h-4 shrink-0 text-primary" />
+        <span class="truncate flex-1">{{ sharedFolder }}</span>
       </div>
 
-      <button class="action-btn" @click="selectFolder">
+      <AppButton
+        @click="selectFolder"
+        class="self-start"
+        :variant="sharedFolder ? 'surface' : 'primary'"
+      >
         {{ sharedFolder ? "Change Folder" : "Setup Sync Folder" }}
-      </button>
+      </AppButton>
     </div>
 
-    <div class="sync-stats" v-if="sharedFolder">
-      <div class="stat-item">
-        <label>Status</label>
-        <span>{{ isSyncing ? "Syncing..." : "Up to date" }}</span>
+    <div v-if="sharedFolder" class="grid grid-cols-2 gap-4 pt-4 border-t border-white/5 mt-2">
+      <div class="flex flex-col gap-1">
+        <span class="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Status</span>
+        <span class="text-body-sm font-medium" :class="isSyncing ? 'text-primary animate-pulse' : 'text-on-surface'">
+          {{ isSyncing ? "Syncing..." : "Up to date" }}
+        </span>
       </div>
-      <div class="stat-item">
-        <label>Backups</label>
-        <span>Protected</span>
+      <div class="flex flex-col gap-1">
+        <span class="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Backups</span>
+        <div class="flex items-center gap-1.5 text-success text-body-sm font-medium">
+          <ShieldCheck class="w-4 h-4" /> Protected
+        </div>
       </div>
     </div>
   </div>
 </template>
-
-<style scoped>
-.sync-settings {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 12px;
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header h3 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 500;
-}
-
-.status-badge {
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.1);
-  color: #94a3b8;
-  text-transform: uppercase;
-  font-weight: 500;
-  letter-spacing: 0.05em;
-}
-
-.status-badge.active {
-  background: rgba(16, 185, 129, 0.1);
-  color: #10b981;
-}
-
-.folder-selection {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.info label {
-  display: block;
-  font-weight: 500;
-  margin-bottom: 4px;
-  font-size: 14px;
-}
-
-.description {
-  font-size: 12px;
-  color: #94a3b8;
-  margin: 0;
-}
-
-.path-display {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px;
-  background: rgba(0, 0, 0, 0.2);
-  border-radius: 8px;
-  font-size: 0.85rem;
-  color: #cbd5e1;
-}
-
-.path {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.action-btn {
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: white;
-  border-radius: 8px;
-  cursor: pointer;
-  font-weight: 500;
-  transition: all 0.2s;
-}
-
-.action-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.sync-stats {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.stat-item label {
-  display: block;
-  font-size: 0.75rem;
-  color: #94a3b8;
-  margin-bottom: 4px;
-}
-
-.stat-item span {
-  font-size: 0.9rem;
-  font-weight: 500;
-}
-</style>
