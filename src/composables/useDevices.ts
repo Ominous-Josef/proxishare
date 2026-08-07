@@ -49,14 +49,14 @@ export function useDevices() {
   const fetchDevices = async () => {
     try {
       const result = await invoke<Device[]>("get_discovered_devices");
-      // Check trust status and connectivity for each device
-      for (const device of result) {
+      // Check trust status and connectivity concurrently for all devices
+      await Promise.all(result.map(async (device) => {
         device.isTrusted = await invoke("is_device_trusted", {
           deviceId: device.id,
         });
         // Test connectivity to primary IP
         device.isReachable = await testConnectivity(device.ip, device.port);
-      }
+      }));
       devices.value = result;
     } catch (e) {
       error.value = "Failed to fetch devices";
@@ -66,9 +66,18 @@ export function useDevices() {
   const triggerScan = async () => {
     isDiscovering.value = true;
     await startDiscovery();
-    setTimeout(() => {
-      isDiscovering.value = false;
-    }, 5000);
+    
+    // Aggressively poll for devices during the 5-second scan window
+    // since mDNS responses arrive asynchronously.
+    let scanCount = 0;
+    const scanInterval = setInterval(() => {
+      fetchDevices();
+      scanCount++;
+      if (scanCount >= 5) {
+        clearInterval(scanInterval);
+        isDiscovering.value = false;
+      }
+    }, 1000);
   };
 
   onMounted(() => {

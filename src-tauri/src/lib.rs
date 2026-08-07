@@ -90,8 +90,11 @@ async fn add_device_manually(ip: String, state: tauri::State<'_, AppState>) -> R
 async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec<Device>, String> {
     let discovery = state.discovery.read().await.clone();
     if let Some(ds) = discovery {
-        Ok(ds.get_devices().await)
+        let devices = ds.get_devices().await;
+        println!("[API] get_discovered_devices returning {} devices", devices.len());
+        Ok(devices)
     } else {
+        println!("[API] get_discovered_devices: discovery service not initialized");
         Ok(vec![])
     }
 }
@@ -232,9 +235,17 @@ async fn test_device_connectivity(
     port: u16,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, String> {
-    let discovery = state.discovery.read().await.clone();
-    if let Some(ds) = discovery {
-        Ok(ds.test_connectivity(&ip, port).await)
+    let tm = state.transfer.read().await.clone();
+    if let Some(tm) = tm {
+        let my_id = "test_connectivity_ping".to_string();
+        let my_name = "Ping".to_string();
+        match tm.ping_device(&ip, port, my_id, my_name).await {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                println!("[API] test_device_connectivity to {}:{} failed: {:?}", ip, port, e);
+                Ok(false)
+            }
+        }
     } else {
         Ok(false)
     }
@@ -246,16 +257,28 @@ async fn find_reachable_device_ip(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     let discovery = state.discovery.read().await.clone();
-    if let Some(ds) = discovery {
+    let tm = state.transfer.read().await.clone();
+    
+    if let (Some(ds), Some(tm)) = (discovery, tm) {
         let devices = ds.get_devices().await;
         if let Some(device) = devices.iter().find(|d| d.id == device_id) {
-            Ok(ds.find_reachable_ip(device).await)
-        } else {
-            Ok(None)
+            let my_id = "test_connectivity_ping".to_string();
+            let my_name = "Ping".to_string();
+            
+            // Try primary IP
+            if tm.ping_device(&device.ip, device.port, my_id.clone(), my_name.clone()).await.is_ok() {
+                return Ok(Some(device.ip.clone()));
+            }
+            
+            // Try other IPs
+            for ip in &device.all_ips {
+                if ip != &device.ip && tm.ping_device(ip, device.port, my_id.clone(), my_name.clone()).await.is_ok() {
+                    return Ok(Some(ip.clone()));
+                }
+            }
         }
-    } else {
-        Ok(None)
     }
+    Ok(None)
 }
 
 #[tauri::command]
