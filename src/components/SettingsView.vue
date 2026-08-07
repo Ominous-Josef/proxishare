@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Settings, Monitor, Shield, Palette, FolderOpen, Activity, FolderSync, Loader2 } from 'lucide-vue-next';
-import { ref, onMounted } from 'vue';
+import { onMounted } from 'vue';
 import SyncSettings from './SyncSettings.vue';
 import NetworkDiagnostics from './NetworkDiagnostics.vue';
 import AppButton from './AppButton.vue';

@@ -7,20 +7,20 @@ import DeviceList from "./components/DeviceList.vue";
 import FileTransfer from "./components/FileTransfer.vue";
 import PairingDialog from "./components/PairingDialog.vue";
 import SettingsView from "./components/SettingsView.vue";
-import TransferHistory from "./components/TransferHistory.vue";
+import TransfersView from "./components/TransfersView.vue";
 import FileAcceptDialog from "./components/FileAcceptDialog.vue";
 import AppButton from "./components/AppButton.vue";
 import ToastNotification from "./components/ToastNotification.vue";
 import { useDevices, type Device } from "./composables/useDevices";
 import { useToast } from "./composables/useToast";
 import { useSettings } from "./composables/useSettings";
-import { Share2, History, Settings, Upload, Download, X, Laptop, Radar } from "lucide-vue-next";
+import { Share2, ArrowRightLeft, Settings, X, Laptop, Radar } from "lucide-vue-next";
 
 const { devices, isDiscovering, refreshDevices, triggerScan } = useDevices();
 const { addToast } = useToast();
 const { settings, loadSettings } = useSettings();
 const selectedId = ref<string | null>(null);
-const currentView = ref<"devices" | "history" | "settings">("devices");
+const currentView = ref<"devices" | "transfers" | "settings">("devices");
 
 const pairingRequest = ref<{
   device: Device;
@@ -154,76 +154,7 @@ const handleRejectFile = async (transferId: string) => {
   }
 };
 
-const activeTransfers = ref<{
-  [key: string]: {
-    fileName: string;
-    progress: number;
-    direction: string;
-    status: string;
-    speedBps: number;
-    timeRemainingSec: number;
-    lastBytesSent: number;
-    lastUpdateTime: number;
-  };
-}>({});
 
-const formatSpeed = (bps: number) => {
-  if (bps === 0) return "-- MB/s";
-  return (bps / (1024 * 1024)).toFixed(1) + " MB/s";
-};
-
-const formatTime = (secs: number) => {
-  if (!isFinite(secs) || secs <= 0) return "--";
-  if (secs < 60) return Math.ceil(secs) + "s";
-  const m = Math.floor(secs / 60);
-  const s = Math.ceil(secs % 60);
-  return `${m}m ${s}s`;
-};
-
-onMounted(async () => {
-  await listen("transfer-progress", (event: any) => {
-    const { transfer_id, file_name, bytes_sent, total_bytes, direction, status } = event.payload;
-    const progress = total_bytes > 0 ? (bytes_sent / total_bytes) * 100 : 0;
-    
-    if (status === 'completed' || status === 'cancelled' || status === 'failed') {
-      setTimeout(() => {
-        delete activeTransfers.value[transfer_id];
-      }, 3000);
-    }
-    
-    const now = Date.now();
-    const existing = activeTransfers.value[transfer_id];
-    let speedBps = 0;
-    let timeRemainingSec = 0;
-
-    if (existing && existing.lastUpdateTime > 0 && status === 'in_progress') {
-      const timeDiff = (now - existing.lastUpdateTime) / 1000;
-      const bytesDiff = bytes_sent - existing.lastBytesSent;
-      
-      if (timeDiff > 0 && bytesDiff >= 0) {
-        const currentSpeed = bytesDiff / timeDiff;
-        speedBps = existing.speedBps > 0 ? (existing.speedBps * 0.7) + (currentSpeed * 0.3) : currentSpeed;
-      } else {
-        speedBps = existing.speedBps;
-      }
-    }
-
-    if (speedBps > 0 && total_bytes > bytes_sent) {
-      timeRemainingSec = (total_bytes - bytes_sent) / speedBps;
-    }
-    
-    activeTransfers.value[transfer_id] = {
-      fileName: file_name,
-      progress,
-      direction,
-      status,
-      speedBps,
-      timeRemainingSec,
-      lastBytesSent: bytes_sent,
-      lastUpdateTime: now,
-    };
-  });
-});
 </script>
 
 <template>
@@ -250,17 +181,17 @@ onMounted(async () => {
           <div v-if="currentView === 'devices'" class="absolute inset-y-2 -left-4 w-1 bg-primary rounded-r-full"></div>
         </button>
 
-        <!-- History -->
+        <!-- Transfers -->
         <button
-          @click="currentView = 'history'"
+          @click="currentView = 'transfers'"
           :class="[
             'relative p-3 rounded-xl flex items-center justify-center group transition-colors',
-            currentView === 'history' ? 'bg-primary/10 text-primary' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50'
+            currentView === 'transfers' ? 'bg-primary/10 text-primary' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50'
           ]"
-          title="History"
+          title="Transfers"
         >
-          <History class="w-6 h-6 stroke-[1.5]" :class="currentView === 'history' ? 'stroke-2' : ''" />
-          <div v-if="currentView === 'history'" class="absolute inset-y-2 -left-4 w-1 bg-primary rounded-r-full"></div>
+          <ArrowRightLeft class="w-6 h-6 stroke-[1.5]" :class="currentView === 'transfers' ? 'stroke-2' : ''" />
+          <div v-if="currentView === 'transfers'" class="absolute inset-y-2 -left-4 w-1 bg-primary rounded-r-full"></div>
         </button>
 
         <!-- Settings -->
@@ -327,10 +258,10 @@ onMounted(async () => {
           </div>
         </template>
 
-        <template v-else-if="currentView === 'history'">
-          <div class="w-full max-w-[800px] mt-4">
-            <h2 class="text-headline-lg font-headline-lg text-on-surface tracking-tight mb-6">Transfer History</h2>
-            <TransferHistory :device-id="null" :device-name="'All History'" />
+        <template v-else-if="currentView === 'transfers'">
+          <div class="w-full max-w-[800px] mt-4 pb-24">
+            <h2 class="text-headline-lg font-headline-lg text-on-surface tracking-tight mb-6">Transfers</h2>
+            <TransfersView :device-id="null" :device-name="'All Transfers'" />
           </div>
         </template>
 
@@ -344,34 +275,6 @@ onMounted(async () => {
 
     </main>
 
-    <!-- Persistent Widget: Transfer Queue (Bottom Right) -->
-    <div v-if="Object.keys(activeTransfers).length > 0" class="fixed bottom-6 right-6 w-80 z-40 flex flex-col gap-2">
-      <div class="bg-surface-container-highest/90 backdrop-blur-md rounded-xl p-4 shadow-2xl border border-white/10">
-        <div class="flex items-center justify-between mb-3">
-          <h4 class="text-label-caps font-semibold text-on-surface tracking-widest uppercase">Active Transfers</h4>
-        </div>
-        
-        <div class="flex flex-col gap-3">
-          <div v-for="(t, id) in activeTransfers" :key="id" class="flex flex-col gap-1.5 bg-surface-container-lowest/50 p-2.5 rounded-lg border border-white/5">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2 overflow-hidden">
-                <Upload v-if="t.direction === 'send'" class="text-primary w-4 h-4 shrink-0" />
-                <Download v-else class="text-primary w-4 h-4 shrink-0" />
-                <span class="text-body-sm text-on-surface truncate">{{ t.fileName }}</span>
-              </div>
-              <span class="text-xs font-medium text-on-surface-variant shrink-0">{{ t.progress.toFixed(0) }}%</span>
-            </div>
-            <div class="w-full bg-surface-container-highest rounded-full h-1 overflow-hidden">
-              <div :class="[t.status === 'completed' ? 'bg-success' : t.status === 'failed' ? 'bg-danger' : 'bg-primary']" class="h-full transition-all duration-300" :style="{ width: t.progress + '%' }"></div>
-            </div>
-            <div class="flex justify-between text-[10px] text-on-surface-variant mt-0.5">
-              <span>{{ t.status === 'in_progress' ? formatSpeed(t.speedBps) : t.status }}</span>
-              <span v-if="t.status === 'in_progress' && t.timeRemainingSec > 0">{{ formatTime(t.timeRemainingSec) }} left</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- Modals -->
     <PairingDialog

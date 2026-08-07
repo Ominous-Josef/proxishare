@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from "vue";
+import { ref, onUnmounted, watch } from "vue";
 import { FileDown, X } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
 
