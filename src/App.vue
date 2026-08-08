@@ -40,6 +40,11 @@ const fileOffer = ref<{
   fileSize: number;
   senderId: string;
   senderName: string;
+  isDir?: boolean;
+  fileCount?: number;
+  subfolderCount?: number;
+  topExtensions?: string[];
+  fileExists?: boolean;
 } | null>(null);
 
 const selectedDevice = computed(
@@ -140,17 +145,22 @@ onMounted(async () => {
       fileSize: event.payload.fileSize,
       senderId: event.payload.senderId,
       senderName: event.payload.senderName || "Unknown Device",
+      isDir: event.payload.isDir,
+      fileCount: event.payload.fileCount,
+      subfolderCount: event.payload.subfolderCount,
+      topExtensions: event.payload.topExtensions,
+      fileExists: event.payload.fileExists,
     };
   });
 });
 
-const handleAcceptFile = async (transferId: string) => {
+const handleAcceptFile = async (transferId: string, newName?: string) => {
   if (!fileOffer.value) return;
   const senderId = fileOffer.value.senderId;
   fileOffer.value.isOpen = false;
   
   try {
-    await invoke("accept_file_offer", { transferId });
+    await invoke("accept_file_offer", { transferId, newName });
     if (senderId) {
       handleSelect(senderId);
     }
@@ -284,6 +294,11 @@ const handleRejectFile = async (transferId: string) => {
       :file-name="fileOffer.fileName"
       :file-size="fileOffer.fileSize"
       :sender-name="fileOffer.senderName"
+      :is-dir="fileOffer.isDir"
+      :file-count="fileOffer.fileCount"
+      :subfolder-count="fileOffer.subfolderCount"
+      :top-extensions="fileOffer.topExtensions"
+      :file-exists="fileOffer.fileExists"
       @close="fileOffer.isOpen = false"
       @accept="handleAcceptFile"
       @reject="handleRejectFile"

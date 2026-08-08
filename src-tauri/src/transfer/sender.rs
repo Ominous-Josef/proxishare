@@ -110,19 +110,58 @@ impl FileSender {
         let mut file_size: u64 = 0;
         let mut file_hash = String::new();
         let mut manifest_files = Vec::new();
+        let mut file_count: u32 = 0;
+        let mut subfolder_count: u32 = 0;
+        let mut ext_map: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
         if is_dir {
+            // Emit preparing state before blocking WalkDir
+            let _ = self.app_handle.emit(
+                "transfer-progress",
+                TransferProgress {
+                    transfer_id: transfer_id.clone(),
+                    device_id: self.remote_device_id.clone(),
+                    file_name: file_name.clone(),
+                    bytes_sent: 0,
+                    total_bytes: 0,
+                    direction: "send".to_string(),
+                    status: "preparing".to_string(),
+                    ..Default::default()
+                },
+            );
+
             for entry in walkdir::WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
                     let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                     file_size += size;
+                    file_count += 1;
+                    if let Some(ext) = entry.path().extension().and_then(|s| s.to_str()) {
+                        let ext = format!(".{}", ext.to_lowercase());
+                        *ext_map.entry(ext).or_insert(0) += 1;
+                    }
                     let rel_path = entry.path().strip_prefix(&path).unwrap_or(entry.path());
                     manifest_files.push(crate::transfer::protocol::FileEntry {
                         relative_path: rel_path.to_string_lossy().to_string(),
                         size,
                     });
+                } else if entry.file_type().is_dir() && entry.path() != path {
+                    subfolder_count += 1;
                 }
             }
+            
+            if file_count == 0 {
+                return Err("Directory contains no files to transfer.".into());
+            }
+            
+            // Save manifest to database
+            let state = self.app_handle.state::<crate::AppState>();
+            let db_lock = state.database.read().await;
+            if let Some(db) = &*db_lock {
+                if let Ok(manifest_json) = serde_json::to_string(&manifest_files) {
+                    let _ = db.update_folder_manifest(&transfer_id, &manifest_json).await;
+                }
+            }
+            
             let _ = self.app_handle.emit("folder-manifest", serde_json::json!({
                 "transfer_id": transfer_id,
                 "files": manifest_files
@@ -137,6 +176,15 @@ impl FileSender {
         let chunk_size = calculate_chunk_size(file_size);
 
         // 1. Send File Offer
+        
+        let mut top_extensions = None;
+        if is_dir && !ext_map.is_empty() {
+            let mut ext_vec: Vec<_> = ext_map.into_iter().collect();
+            ext_vec.sort_by(|a, b| b.1.cmp(&a.1)); // Sort descending by count
+            let top_3: Vec<String> = ext_vec.into_iter().take(3).map(|(ext, _)| ext).collect();
+            top_extensions = Some(top_3);
+        }
+        
         let offer = MessageType::FileOffer {
             transfer_id: transfer_id.clone(),
             metadata: FileMetadata {
@@ -145,6 +193,9 @@ impl FileSender {
                 hash: file_hash,
                 chunk_size: chunk_size as u32,
                 is_dir: Some(is_dir),
+                file_count: if is_dir { Some(file_count) } else { None },
+                subfolder_count: if is_dir { Some(subfolder_count) } else { None },
+                top_extensions,
             },
             sender_id: self.device_id.clone(),
             sender_name: self.device_name.clone(),
@@ -541,6 +592,8 @@ impl FileSender {
                                     total_size: record.total_size,
                                     direction: &record.direction,
                                     file_hash: &record.file_hash,
+                                    is_dir: record.is_dir,
+                                    folder_manifest: record.folder_manifest.as_deref(),
                                 })
                                 .await;
                             let _ = db

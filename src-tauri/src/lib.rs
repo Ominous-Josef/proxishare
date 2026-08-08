@@ -12,8 +12,8 @@ use crate::discovery::mdns::{
 use crate::transfer::TransferManager;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Manager;
 use tokio::sync::RwLock;
+use tauri::Manager;
 
 use crate::crypto::security::SecurityService;
 use crate::settings::{Settings, SettingsManager};
@@ -41,6 +41,7 @@ pub struct AppState {
     pub security: Arc<RwLock<SecurityService>>,
     pub database: Arc<RwLock<Option<Database>>>,
     pub transfers: TransferRegistry,
+    pub renames: Arc<RwLock<HashMap<String, String>>>,
     pub settings: Arc<RwLock<SettingsManager>>,
 }
 
@@ -156,6 +157,8 @@ async fn send_file(
                     total_size: file_size,
                     direction: "send",
                     file_hash: "", // Hash will be calculated during transfer
+                    is_dir,
+                    folder_manifest: None,
                 })
                 .await
             {
@@ -391,7 +394,11 @@ async fn request_pairing(
 async fn accept_file_offer(
     state: tauri::State<'_, AppState>,
     transfer_id: String,
+    new_name: Option<String>,
 ) -> Result<(), String> {
+    if let Some(name) = new_name {
+        state.renames.write().await.insert(transfer_id.clone(), name);
+    }
     let mut transfers = state.transfers.write().await;
     if let std::collections::hash_map::Entry::Occupied(mut e) = transfers.entry(transfer_id) {
         e.insert(TransferStatus::InProgress);
@@ -568,7 +575,7 @@ async fn sync_history(
     let records = {
         let db_lock = state.database.read().await;
         if let Some(db) = &*db_lock {
-            db.get_transfer_history(100)
+            db.get_transfer_history(100, 0)
                 .await
                 .map_err(|e| e.to_string())?
         } else {
@@ -611,10 +618,11 @@ async fn get_sync_status(state: tauri::State<'_, AppState>) -> Result<Option<Str
 async fn get_transfer_history(
     state: tauri::State<'_, AppState>,
     limit: Option<i32>,
+    offset: Option<i32>,
 ) -> Result<Vec<TransferRecord>, String> {
     let db_lock = state.database.read().await;
     if let Some(db) = &*db_lock {
-        db.get_transfer_history(limit.unwrap_or(100))
+        db.get_transfer_history(limit.unwrap_or(100), offset.unwrap_or(0))
             .await
             .map_err(|e| e.to_string())
     } else {
@@ -627,10 +635,11 @@ async fn get_device_transfers(
     state: tauri::State<'_, AppState>,
     device_id: String,
     limit: Option<i32>,
+    offset: Option<i32>,
 ) -> Result<Vec<TransferRecord>, String> {
     let db_lock = state.database.read().await;
     if let Some(db) = &*db_lock {
-        db.get_device_transfers(&device_id, limit.unwrap_or(50))
+        db.get_device_transfers(&device_id, limit.unwrap_or(50), offset.unwrap_or(0))
             .await
             .map_err(|e| e.to_string())
     } else {
@@ -746,6 +755,8 @@ pub fn run() {
             // Initialize Device ID and Name
             let device_name = initial_settings.device_name;
 
+            let renames = Arc::new(RwLock::new(HashMap::new()));
+
             println!("Initializing services with block_on");
             let (discovery, transfer_manager) = tauri::async_runtime::block_on(async {
                 println!("Inside block_on: Initializing TransferManager");
@@ -759,6 +770,7 @@ pub fn run() {
                     device_id.clone(),
                     settings.clone(),
                     security.clone(),
+                    renames.clone(),
                 )?;
                 println!("Inside block_on: TransferManager initialized");
 
@@ -786,7 +798,7 @@ pub fn run() {
             if let Err(e) = discovery.start_discovery() {
                 println!("Error starting discovery: {:?}", e);
             }
-
+            
             let app_state = AppState {
                 discovery: Arc::new(RwLock::new(Some(discovery))),
                 transfer: Arc::new(RwLock::new(Some(transfer_manager))),
@@ -794,6 +806,7 @@ pub fn run() {
                 security,
                 database: database.clone(),
                 transfers,
+                renames,
                 settings,
             };
             app.manage(app_state);

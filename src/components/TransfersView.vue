@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { 
   Clock, 
   File, 
+  Folder,
   RefreshCw, 
   CheckCircle2, 
   XCircle, 
@@ -13,7 +14,7 @@ import {
   Download
 } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   TransferRecord,
   useFileTransfer,
@@ -31,6 +32,11 @@ const { addToast } = useToast();
 const deviceHistory = ref<TransferRecord[]>([]);
 const isLoading = ref(false);
 const showClearConfirm = ref(false);
+const currentPage = ref(0);
+const PAGE_SIZE = 20;
+const hasMore = ref(true);
+const loadMoreTrigger = ref<HTMLElement | null>(null);
+let observer: IntersectionObserver | null = null;
 
 const hasActiveTransfers = computed(() => {
   if (!props.deviceId) return false;
@@ -43,14 +49,30 @@ const displayHistory = computed(() => {
   return list.filter(r => r && !activeStatuses.includes(r.status));
 });
 
-const loadData = async () => {
+const loadData = async (reset = false) => {
+  if (reset) {
+    currentPage.value = 0;
+    hasMore.value = true;
+  }
+  
+  if (!hasMore.value && !reset) return;
+
   isLoading.value = true;
   try {
+    const offset = currentPage.value * PAGE_SIZE;
+    let newRecords: TransferRecord[] = [];
     if (props.deviceId) {
-      deviceHistory.value = await loadDeviceHistory(props.deviceId);
+      newRecords = await loadDeviceHistory(props.deviceId, PAGE_SIZE, offset);
+      if (reset) deviceHistory.value = newRecords;
+      else deviceHistory.value = [...deviceHistory.value, ...newRecords];
     } else {
-      await loadHistory();
+      newRecords = await loadHistory(PAGE_SIZE, offset);
     }
+    
+    if (newRecords.length < PAGE_SIZE) {
+      hasMore.value = false;
+    }
+    currentPage.value++;
   } catch (error) {
     addToast("Failed to load history: " + String(error), "error");
   } finally {
@@ -59,15 +81,31 @@ const loadData = async () => {
 };
 
 onMounted(async () => {
-  await loadData();
+  await loadData(true);
+
+  observer = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting && hasMore.value && !isLoading.value) {
+      loadData(false);
+    }
+  }, { rootMargin: '200px' });
 
   const unlisten = await listen("history-updated", async () => {
-    await loadData();
+    await loadData(true);
   });
 
   onUnmounted(() => {
     unlisten();
+    if (observer) {
+      observer.disconnect();
+    }
   });
+});
+
+watch(loadMoreTrigger, (el: HTMLElement | null) => {
+  if (observer) {
+    observer.disconnect();
+    if (el) observer.observe(el);
+  }
 });
 
 const formatDate = (timestamp: number) => {
@@ -112,7 +150,7 @@ const handleClearHistory = async () => {
             v-if="deviceId"
             variant="surface"
             size="icon"
-            @click="loadData"
+            @click="loadData(true)"
             :disabled="isLoading || hasActiveTransfers"
             :title="hasActiveTransfers ? 'Cannot sync while a transfer is active' : 'Sync History'"
           >
@@ -132,14 +170,14 @@ const handleClearHistory = async () => {
 
       <!-- Content -->
       <div class="flex-1 overflow-y-auto">
-        <!-- Loading -->
-        <div v-if="isLoading" class="h-full flex flex-col items-center justify-center text-on-surface-variant/60 gap-4 py-12">
+        <!-- Loading (Initial) -->
+        <div v-if="isLoading && displayHistory.length === 0" class="h-full flex flex-col items-center justify-center text-on-surface-variant/60 gap-4 py-12">
           <div class="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin"></div>
           <span class="text-sm">Loading history...</span>
         </div>
 
         <!-- Empty -->
-        <div v-else-if="displayHistory.length === 0" class="h-full flex flex-col items-center justify-center text-on-surface-variant/50 gap-3 py-16">
+        <div v-else-if="displayHistory.length === 0 && !isLoading" class="h-full flex flex-col items-center justify-center text-on-surface-variant/50 gap-3 py-16">
           <File class="w-10 h-10 opacity-50" />
           <p class="text-sm">No completed transfers yet</p>
         </div>
@@ -159,11 +197,19 @@ const handleClearHistory = async () => {
 
             <!-- Details -->
             <div class="flex-1 min-w-0 flex flex-col justify-center">
-              <div class="text-body-md font-medium text-on-surface truncate">{{ record.file_name }}</div>
+              <div class="flex items-center gap-2">
+                <Folder v-if="record.is_dir" class="w-4 h-4 text-on-surface-variant shrink-0" />
+                <File v-else class="w-4 h-4 text-on-surface-variant shrink-0" />
+                <div class="text-body-md font-medium text-on-surface truncate" :class="{'line-through opacity-60 text-on-surface-variant': record.file_exists === false}">{{ record.file_name }}</div>
+              </div>
               <div class="flex items-center gap-2 text-xs text-on-surface-variant/70 mt-1">
                 <span class="font-medium text-on-surface-variant">{{ formatBytes(record.total_size) }}</span>
                 <span class="w-1 h-1 rounded-full bg-outline-variant/50"></span>
+                <span v-if="record.is_dir">Folder</span>
+                <span v-else>File</span>
+                <span class="w-1 h-1 rounded-full bg-outline-variant/50"></span>
                 <span>{{ formatDate(record.created_at) }}</span>
+                <span v-if="record.file_exists === false" class="text-danger flex items-center gap-1 font-medium ml-2"><AlertTriangle class="w-3 h-3"/> Missing</span>
               </div>
             </div>
 
@@ -182,6 +228,11 @@ const handleClearHistory = async () => {
               <PauseCircle v-else-if="record.status === 'paused'" class="w-4 h-4" />
               <Circle v-else class="w-4 h-4" />
             </div>
+          </div>
+          
+          <!-- Load More Trigger -->
+          <div ref="loadMoreTrigger" class="flex justify-center py-6 min-h-[60px]">
+            <div v-if="isLoading && displayHistory.length > 0" class="w-6 h-6 rounded-full border-2 border-primary/30 border-t-primary animate-spin"></div>
           </div>
         </div>
       </div>

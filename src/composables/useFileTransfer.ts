@@ -17,6 +17,7 @@ export interface Transfer {
     | "failed"
     | "paused"
     | "cancelled"
+    | "preparing"
     | "partial_success";
   direction: "send" | "receive";
   filePath?: string;
@@ -55,6 +56,9 @@ export interface TransferRecord {
   file_hash: string;
   created_at: number;
   updated_at: number;
+  is_dir: boolean;
+  folder_manifest?: string;
+  file_exists?: boolean;
 }
 
 export function useFileTransfer() {
@@ -74,11 +78,6 @@ export function useFileTransfer() {
       "transfer-progress",
       (event) => {
         const progress = event.payload;
-        const percent =
-          progress.total_bytes > 0
-            ? Math.round((progress.bytes_sent / progress.total_bytes) * 100)
-            : 0;
-
         const existing = activeTransfers.value.get(progress.transfer_id);
         
         // Prevent reverting status if we already cancelled locally
@@ -90,9 +89,14 @@ export function useFileTransfer() {
             addToast(`Transfer of ${progress.file_name} was declined or failed.`, "error");
         }
 
-        const now = Date.now();
+        const isPreparing = progress.status === 'preparing';
+        const percent = isPreparing ? 0 : progress.total_bytes > 0
+          ? Math.round((progress.bytes_sent / progress.total_bytes) * 100)
+          : existing?.progress || 0;
+
         let speed = 0;
-        let timeRemaining = 0;
+        let timeRemaining = undefined;
+        const now = Date.now();
 
         if (existing && existing.lastUpdateTime && progress.status === 'in_progress') {
           const timeDiff = (now - existing.lastUpdateTime) / 1000;
@@ -289,23 +293,31 @@ export function useFileTransfer() {
     }
   };
 
-  const loadHistory = async (limit?: number) => {
+  const loadHistory = async (limit?: number, offset?: number) => {
     try {
       const records = await invoke<TransferRecord[]>("get_transfer_history", {
         limit: limit ?? 100,
+        offset: offset ?? 0,
       });
-      history.value = records || [];
+      if (offset && offset > 0) {
+        history.value = [...history.value, ...(records || [])];
+      } else {
+        history.value = records || [];
+      }
+      return records || [];
     } catch (e) {
       console.error("Failed to load transfer history:", e);
-      history.value = [];
+      if (!offset) history.value = [];
+      return [];
     }
   };
 
-  const loadDeviceHistory = async (deviceId: string, limit?: number) => {
+  const loadDeviceHistory = async (deviceId: string, limit?: number, offset?: number) => {
     try {
       const records = await invoke<TransferRecord[]>("get_device_transfers", {
         deviceId,
         limit: limit ?? 50,
+        offset: offset ?? 0,
       });
       return records || [];
     } catch (e) {

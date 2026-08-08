@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::RwLock;
 
 use tauri::Emitter;
 
@@ -12,9 +13,10 @@ pub struct FileReceiver {
     save_directory: PathBuf,
     connection: Connection,
     app_handle: tauri::AppHandle,
-    database: Arc<tokio::sync::RwLock<Option<crate::db::Database>>>,
+    database: Arc<RwLock<Option<crate::db::Database>>>,
     transfers: crate::TransferRegistry,
-    security: Arc<tokio::sync::RwLock<crate::crypto::security::SecurityService>>,
+    security: Arc<RwLock<crate::crypto::security::SecurityService>>,
+    renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
 }
 
 impl FileReceiver {
@@ -22,9 +24,10 @@ impl FileReceiver {
         save_directory: PathBuf,
         connection: Connection,
         app_handle: tauri::AppHandle,
-        database: Arc<tokio::sync::RwLock<Option<crate::db::Database>>>,
+        database: Arc<RwLock<Option<crate::db::Database>>>,
         transfers: crate::TransferRegistry,
-        security: Arc<tokio::sync::RwLock<crate::crypto::security::SecurityService>>,
+        security: Arc<RwLock<crate::crypto::security::SecurityService>>,
+        renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
     ) -> Self {
         Self {
             save_directory,
@@ -33,6 +36,7 @@ impl FileReceiver {
             database,
             transfers,
             security,
+            renames,
         }
     }
 
@@ -107,6 +111,11 @@ impl FileReceiver {
                                 },
                             )
                             .await;
+
+                            if let Some(new_name) = self.renames.read().await.get(&current_transfer_id) {
+                                current_file_name = new_name.clone();
+                            }
+                            self.renames.write().await.remove(&current_transfer_id);
 
                             if !is_dir {
                                 let path = self.save_directory.join(&current_file_name);
@@ -371,6 +380,7 @@ impl FileReceiver {
                         current_file_name = file_name.to_string();
                         current_file_size = metadata.size;
                         is_dir = metadata.is_dir.unwrap_or(false);
+                        let file_exists = path.exists();
 
                         // Update registry as Pending
                         {
@@ -395,6 +405,8 @@ impl FileReceiver {
                                         total_size: current_file_size as i64,
                                         direction: "receive",
                                         file_hash: &metadata.hash,
+                                        is_dir,
+                                        folder_manifest: None,
                                     })
                                     .await
                                 {
@@ -412,6 +424,11 @@ impl FileReceiver {
                                 "fileSize": current_file_size,
                                 "senderId": sender_id,
                                 "senderName": sender_name,
+                                "isDir": is_dir,
+                                "fileCount": metadata.file_count,
+                                "subfolderCount": metadata.subfolder_count,
+                                "topExtensions": metadata.top_extensions,
+                                "fileExists": file_exists,
                             }),
                         );
                     }
@@ -653,7 +670,7 @@ impl FileReceiver {
 
                                 // Automatic History Sync after completion
                                 println!("[Transfer] Preparing automatic history sync...");
-                                if let Ok(records) = db.get_transfer_history(50).await {
+                                if let Ok(records) = db.get_transfer_history(50, 0).await {
                                     println!(
                                         "[Transfer] Sending {} history records to sender...",
                                         records.len()
@@ -723,6 +740,8 @@ impl FileReceiver {
                                         total_size: record.total_size,
                                         direction: &record.direction,
                                         file_hash: &record.file_hash,
+                                        is_dir: record.is_dir,
+                                        folder_manifest: record.folder_manifest.as_deref(),
                                     })
                                     .await;
                                 let _ = db

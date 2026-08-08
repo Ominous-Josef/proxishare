@@ -9,13 +9,24 @@ const props = defineProps<{
   fileName: string;
   fileSize: number;
   senderName: string;
+  isDir?: boolean;
+  fileCount?: number;
+  subfolderCount?: number;
+  topExtensions?: string[];
+  fileExists?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "close"): void;
-  (e: "accept", transferId: string): void;
+  (e: "accept", transferId: string, newName?: string): void;
   (e: "reject", transferId: string): void;
 }>();
+
+const newFileName = ref(props.fileName);
+
+watch(() => props.fileName, (val) => {
+  newFileName.value = val;
+});
 
 const timeLeft = ref(300); // 5 minutes
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -90,6 +101,25 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <div v-if="isDir" class="w-full text-left text-xs text-on-surface-variant mb-6 px-2">
+            Contains {{ fileCount || '?' }} files across {{ subfolderCount || '0' }} folders<span v-if="topExtensions && topExtensions.length > 0"> (Mostly {{ topExtensions.map(e => e.toUpperCase()).join(', ') }})</span>.
+        </div>
+
+        <div v-if="fileExists" class="w-full mb-6 text-left px-2">
+          <div class="text-sm font-semibold text-warning mb-2 flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-triangle-alert"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+            File already exists!
+          </div>
+          <p class="text-xs text-on-surface-variant mb-3">Accepting will overwrite the existing file. Alternatively, you can save it as a new name.</p>
+          <input 
+            type="text" 
+            v-model="newFileName"
+            class="w-full bg-surface-container border border-white/10 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors"
+            placeholder="New file name"
+            @keyup.enter="emit('accept', transferId, newFileName !== fileName ? newFileName : undefined)"
+          />
+        </div>
+
         <p class="text-xs text-danger font-medium mb-6">
           Auto-rejecting in {{ formatTime(timeLeft) }}
         </p>
@@ -105,9 +135,9 @@ onUnmounted(() => {
           <AppButton 
             class="flex-1"
             variant="primary"
-            @click="emit('accept', transferId)"
+            @click="emit('accept', transferId, newFileName !== fileName ? newFileName : undefined)"
           >
-            Accept
+            {{ fileExists && newFileName === fileName ? 'Overwrite' : 'Accept' }}
           </AppButton>
         </div>
       </div>

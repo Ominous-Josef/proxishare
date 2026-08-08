@@ -12,7 +12,9 @@ CREATE TABLE IF NOT EXISTS transfers (
     bytes_transferred INTEGER DEFAULT 0,
     file_hash TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    is_dir BOOLEAN DEFAULT FALSE,
+    folder_manifest TEXT
 );
 
 -- Chunk progress for resumable receiving

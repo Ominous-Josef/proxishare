@@ -20,6 +20,12 @@ pub struct TransferRecord {
     pub file_hash: String,
     pub created_at: i64,
     pub updated_at: i64,
+    #[sqlx(default)]
+    pub is_dir: bool,
+    #[sqlx(default)]
+    pub folder_manifest: Option<String>,
+    #[sqlx(default)]
+    pub file_exists: Option<bool>,
 }
 
 pub struct TransferRecordArgs<'a> {
@@ -30,6 +36,8 @@ pub struct TransferRecordArgs<'a> {
     pub total_size: i64,
     pub direction: &'a str,
     pub file_hash: &'a str,
+    pub is_dir: bool,
+    pub folder_manifest: Option<&'a str>,
 }
 
 pub struct Database {
@@ -62,6 +70,14 @@ impl Database {
             .execute(&pool)
             .await;
 
+        let _ = sqlx::query("ALTER TABLE transfers ADD COLUMN is_dir BOOLEAN DEFAULT FALSE")
+            .execute(&pool)
+            .await;
+            
+        let _ = sqlx::query("ALTER TABLE transfers ADD COLUMN folder_manifest TEXT")
+            .execute(&pool)
+            .await;
+
         println!("[Database] Initialized and migrations run");
 
         Ok(Self { pool })
@@ -79,8 +95,8 @@ impl Database {
 
         sqlx::query(
             r#"
-            INSERT OR REPLACE INTO transfers (id, device_id, file_name, file_path, total_size, direction, status, bytes_transferred, file_hash, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT status FROM transfers WHERE id = ?), 'pending'), COALESCE((SELECT bytes_transferred FROM transfers WHERE id = ?), 0), ?, ?, ?)
+            INSERT OR REPLACE INTO transfers (id, device_id, file_name, file_path, total_size, direction, status, bytes_transferred, file_hash, created_at, updated_at, is_dir, folder_manifest)
+            VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT status FROM transfers WHERE id = ?), 'pending'), COALESCE((SELECT bytes_transferred FROM transfers WHERE id = ?), 0), ?, ?, ?, ?, ?)
             "#,
         )
         .bind(args.id)
@@ -94,6 +110,8 @@ impl Database {
         .bind(args.file_hash)
         .bind(now)
         .bind(now)
+        .bind(args.is_dir)
+        .bind(args.folder_manifest)
         .execute(&self.pool)
         .await?;
 
@@ -147,24 +165,43 @@ impl Database {
         Ok(())
     }
 
+    pub async fn update_folder_manifest(
+        &self,
+        id: &str,
+        manifest: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE transfers SET folder_manifest = ? WHERE id = ?")
+            .bind(manifest)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_transfer_history(
         &self,
         limit: i32,
+        offset: i32,
     ) -> Result<Vec<TransferRecord>, sqlx::Error> {
-        let records = sqlx::query_as::<_, TransferRecord>(
+        let mut records = sqlx::query_as::<_, TransferRecord>(
             r#"
             SELECT 
                 id, device_id, NULL as device_name, file_name, file_path, 
                 total_size, direction, status, bytes_transferred, file_hash, 
-                created_at, updated_at
+                created_at, updated_at, is_dir, folder_manifest
             FROM transfers 
             ORDER BY created_at DESC 
-            LIMIT ?
+            LIMIT ? OFFSET ?
             "#,
         )
         .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
+
+        for record in &mut records {
+            record.file_exists = Some(std::path::Path::new(&record.file_path).exists());
+        }
 
         Ok(records)
     }
@@ -173,23 +210,29 @@ impl Database {
         &self,
         device_id: &str,
         limit: i32,
+        offset: i32,
     ) -> Result<Vec<TransferRecord>, sqlx::Error> {
-        let records = sqlx::query_as::<_, TransferRecord>(
+        let mut records = sqlx::query_as::<_, TransferRecord>(
             r#"
             SELECT 
                 id, device_id, NULL as device_name, file_name, file_path, 
                 total_size, direction, status, bytes_transferred, file_hash, 
-                created_at, updated_at
+                created_at, updated_at, is_dir, folder_manifest
             FROM transfers 
             WHERE device_id = ?
             ORDER BY created_at DESC 
-            LIMIT ?
+            LIMIT ? OFFSET ?
             "#,
         )
         .bind(device_id)
         .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
+
+        for record in &mut records {
+            record.file_exists = Some(std::path::Path::new(&record.file_path).exists());
+        }
 
         Ok(records)
     }

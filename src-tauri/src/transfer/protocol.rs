@@ -7,6 +7,9 @@ pub struct FileMetadata {
     pub hash: String,
     pub chunk_size: u32,
     pub is_dir: Option<bool>,
+    pub file_count: Option<u32>,
+    pub subfolder_count: Option<u32>,
+    pub top_extensions: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

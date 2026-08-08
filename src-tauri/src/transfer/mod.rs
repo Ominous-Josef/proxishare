@@ -18,6 +18,7 @@ pub struct TransferManager {
     device_id: String,
     settings: Arc<RwLock<crate::settings::SettingsManager>>,
     security: Arc<RwLock<crate::crypto::security::SecurityService>>,
+    renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
 }
 
 impl TransferManager {
@@ -29,6 +30,7 @@ impl TransferManager {
         device_id: String,
         settings: Arc<RwLock<crate::settings::SettingsManager>>,
         security: Arc<RwLock<crate::crypto::security::SecurityService>>,
+        renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
     ) -> Result<Self, crate::GenericError> {
         let cert_manager = CertificateManager::generate_self_signed()?;
 
@@ -56,6 +58,7 @@ impl TransferManager {
             device_id,
             settings,
             security,
+            renames,
         })
     }
 
@@ -76,12 +79,13 @@ impl TransferManager {
             let database = self.database.clone();
             let transfers = self.transfers.clone();
             let security = self.security.clone();
+            let renames = self.renames.clone();
             tauri::async_runtime::spawn(async move {
                 match conn.await {
                     Ok(connection) => {
                         println!("[Transfer] Connection established from remote peer");
                         let receiver = FileReceiver::new(
-                            save_dir, connection, app_handle, database, transfers, security,
+                            save_dir, connection, app_handle, database, transfers, security, renames,
                         );
                         match receiver.handle_transfer().await {
                             Ok(_) => println!("[Transfer] File received successfully"),
