@@ -55,15 +55,15 @@
 
 		<!-- Hero -->
 		<main class="container mx-auto px-6 py-20 text-center max-w-4xl">
-			<div id="version-badge"
-				class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-brand-500/10 text-brand-500 text-sm font-medium mb-8 border border-brand-500/20">
+			<a id="version-badge" href="https://github.com/Ominous-Josef/proxishare/releases/latest"
+				class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-brand-500/10 text-brand-500 hover:bg-brand-500/20 text-sm font-medium mb-8 border border-brand-500/20 transition-colors">
 				<span class="relative flex h-2 w-2">
 					<span
 						class="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-500 opacity-75"></span>
 					<span class="relative inline-flex rounded-full h-2 w-2 bg-brand-500"></span>
 				</span>
 				v1.0.0 Available Now
-			</div>
+			</a>
 
 			<h1
 				class="text-5xl md:text-6xl font-extrabold tracking-tight mb-6 bg-gradient-to-br from-white to-slate-400 bg-clip-text text-transparent">
@@ -326,7 +326,7 @@
 						<span class="text-xs font-mono text-slate-500">.dmg</span>
 					</div>
 					<h3 class="font-semibold text-lg mb-1">macOS</h3>
-					<p class="text-sm text-slate-400">Universal / Apple Silicon</p>
+					<p class="text-sm text-slate-400">Apple Silicon (M1/M2/M3)</p>
 				</a>
 
 				<!-- Linux Dropdown -->
@@ -402,6 +402,52 @@
 			</div>
 		</main>
 
+		<!-- Features -->
+		<section class="container mx-auto px-6 py-16 border-t border-slate-800">
+			<div class="grid md:grid-cols-3 gap-12 text-center max-w-5xl mx-auto">
+				<div>
+					<div
+						class="w-12 h-12 bg-slate-800 rounded-xl flex items-center justify-center mx-auto mb-4 text-brand-500">
+						<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+								d="M13 10V3L4 14h7v7l9-11h-7z" />
+						</svg>
+					</div>
+					<h3 class="font-semibold text-lg mb-2">Blazing Fast</h3>
+					<p class="text-slate-400 leading-relaxed">
+						Built on Rust and QUIC for maximum throughput on your local network.
+					</p>
+				</div>
+				<div>
+					<div
+						class="w-12 h-12 bg-slate-800 rounded-xl flex items-center justify-center mx-auto mb-4 text-brand-500">
+						<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+								d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+						</svg>
+					</div>
+					<h3 class="font-semibold text-lg mb-2">Secure & Private</h3>
+					<p class="text-slate-400 leading-relaxed">
+						Direct device-to-device transfer. Your data never leaves your
+						network.
+					</p>
+				</div>
+				<div>
+					<div
+						class="w-12 h-12 bg-slate-800 rounded-xl flex items-center justify-center mx-auto mb-4 text-brand-500">
+						<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+								d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+						</svg>
+					</div>
+					<h3 class="font-semibold text-lg mb-2">Zero Config</h3>
+					<p class="text-slate-400 leading-relaxed">
+						Automatic mDNS discovery. Just open the app and see devices nearby.
+					</p>
+				</div>
+			</div>
+		</section>
+
 		<!-- Troubleshooting Section -->
 		<section id="troubleshooting" class="container mx-auto px-6 py-20 border-t border-slate-800">
 			<div class="max-w-4xl mx-auto">
@@ -457,52 +503,6 @@
 							</svg>
 						</a>
 					</div>
-				</div>
-			</div>
-		</section>
-
-		<!-- Features -->
-		<section class="container mx-auto px-6 py-16 border-t border-slate-800">
-			<div class="grid md:grid-cols-3 gap-12 text-center max-w-5xl mx-auto">
-				<div>
-					<div
-						class="w-12 h-12 bg-slate-800 rounded-xl flex items-center justify-center mx-auto mb-4 text-brand-500">
-						<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-								d="M13 10V3L4 14h7v7l9-11h-7z" />
-						</svg>
-					</div>
-					<h3 class="font-semibold text-lg mb-2">Blazing Fast</h3>
-					<p class="text-slate-400 leading-relaxed">
-						Built on Rust and QUIC for maximum throughput on your local network.
-					</p>
-				</div>
-				<div>
-					<div
-						class="w-12 h-12 bg-slate-800 rounded-xl flex items-center justify-center mx-auto mb-4 text-brand-500">
-						<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-								d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-						</svg>
-					</div>
-					<h3 class="font-semibold text-lg mb-2">Secure & Private</h3>
-					<p class="text-slate-400 leading-relaxed">
-						Direct device-to-device transfer. Your data never leaves your
-						network.
-					</p>
-				</div>
-				<div>
-					<div
-						class="w-12 h-12 bg-slate-800 rounded-xl flex items-center justify-center mx-auto mb-4 text-brand-500">
-						<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-								d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
-						</svg>
-					</div>
-					<h3 class="font-semibold text-lg mb-2">Zero Config</h3>
-					<p class="text-slate-400 leading-relaxed">
-						Automatic mDNS discovery. Just open the app and see devices nearby.
-					</p>
 				</div>
 			</div>
 		</section>
