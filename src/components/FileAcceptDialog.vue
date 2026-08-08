@@ -40,7 +40,7 @@ watch(() => props.isOpen, (val) => {
   } else {
     stopTimer();
   }
-});
+}, { immediate: true });
 
 onUnmounted(() => {
   stopTimer();

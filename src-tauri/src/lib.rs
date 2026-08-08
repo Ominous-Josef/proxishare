@@ -174,6 +174,7 @@ async fn send_file(
             let send_result: Result<(), String> = tm
                 .send_file(
                     transfer_id.clone(),
+                    device_id.clone(),
                     ip.clone(),
                     port,
                     file_path.clone(),

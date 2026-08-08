@@ -195,6 +195,7 @@ impl TransferManager {
     pub async fn send_file(
         &self,
         transfer_id: String,
+        device_id: String,
         target_ip: String,
         target_port: u16,
         file_path: PathBuf,
@@ -235,6 +236,7 @@ impl TransferManager {
             self.app_handle.clone(),
             self.device_id.clone(),
             sender_name,
+            device_id.clone(),
         );
         println!("[Transfer] Starting file transfer with ID: {}", transfer_id);
 

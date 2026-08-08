@@ -688,6 +688,8 @@ device_id: current_device_id.clone(),
         let len = data.len() as u32;
         send.write_all(&len.to_be_bytes()).await?;
         send.write_all(&data).await?;
+        use tokio::io::AsyncWriteExt;
+        send.flush().await?;
         Ok(())
     }
 }
