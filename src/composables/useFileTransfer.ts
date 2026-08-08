@@ -61,6 +61,8 @@ export function useFileTransfer() {
   const transfers = ref<Transfer[]>([]);
   const history = ref<TransferRecord[]>([]);
   let unlistenProgress: UnlistenFn | null = null;
+  let unlistenFolderManifest: UnlistenFn | null = null;
+  let unlistenHistory: UnlistenFn | null = null;
 
   // Setup progress listener
   const setupProgressListener = async () => {
@@ -134,7 +136,7 @@ export function useFileTransfer() {
       }
     );
     
-    await listen<{ transfer_id: string; files: { relative_path: string; size: number }[] }>("folder-manifest", (event) => {
+    unlistenFolderManifest = await listen<{ transfer_id: string; files: { relative_path: string; size: number }[] }>("folder-manifest", (event) => {
         const { transfer_id, files } = event.payload;
         const transfer = activeTransfers.value.get(transfer_id);
         if (transfer) {
@@ -164,7 +166,7 @@ export function useFileTransfer() {
 
   // Listen for history updates
   const setupHistoryListener = async () => {
-    await listen("history-updated", async () => {
+    unlistenHistory = await listen("history-updated", async () => {
       console.log("[FileTransfer] History update event received, reloading...");
       await loadHistory();
     });
@@ -176,6 +178,14 @@ export function useFileTransfer() {
     if (unlistenProgress) {
       unlistenProgress();
       unlistenProgress = null;
+    }
+    if (unlistenFolderManifest) {
+      unlistenFolderManifest();
+      unlistenFolderManifest = null;
+    }
+    if (unlistenHistory) {
+      unlistenHistory();
+      unlistenHistory = null;
     }
   });
 
@@ -254,14 +264,34 @@ export function useFileTransfer() {
     }
   };
 
+  const syncHistory = async (deviceId: string) => {
+    try {
+      const reachableIp = await invoke<string | null>(
+        "find_reachable_device_ip",
+        { deviceId }
+      );
+      if (reachableIp) {
+        await invoke("sync_history", {
+          deviceId,
+          ip: reachableIp,
+          port: 14201, // default port, or we could look it up from useDevices
+        });
+        console.log(`[FileTransfer] Synced history with ${deviceId}`);
+      }
+    } catch (e) {
+      console.error("[FileTransfer] Failed to sync history:", e);
+    }
+  };
+
   const loadHistory = async (limit?: number) => {
     try {
       const records = await invoke<TransferRecord[]>("get_transfer_history", {
         limit: limit ?? 100,
       });
-      history.value = records;
+      history.value = records || [];
     } catch (e) {
       console.error("Failed to load transfer history:", e);
+      history.value = [];
     }
   };
 
@@ -271,7 +301,7 @@ export function useFileTransfer() {
         deviceId,
         limit: limit ?? 50,
       });
-      return records;
+      return records || [];
     } catch (e) {
       console.error("Failed to load device transfer history:", e);
       return [];
@@ -338,5 +368,6 @@ export function useFileTransfer() {
     pauseTransfer,
     resumeTransfer,
     cancelTransfer,
+    syncHistory,
   };
 }

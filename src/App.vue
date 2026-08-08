@@ -14,7 +14,7 @@ import ToastNotification from "./components/ToastNotification.vue";
 import { useDevices, type Device } from "./composables/useDevices";
 import { useToast } from "./composables/useToast";
 import { useSettings } from "./composables/useSettings";
-import { Share2, ArrowRightLeft, Settings, X, Laptop, Radar } from "lucide-vue-next";
+import { Share2, Settings, X, Laptop, Radar, Clock } from "lucide-vue-next";
 
 const { devices, isDiscovering, refreshDevices, triggerScan } = useDevices();
 const { addToast } = useToast();
@@ -182,16 +182,16 @@ const handleRejectFile = async (transferId: string) => {
           <div v-if="currentView === 'devices'" class="absolute inset-y-2 -left-4 w-1 bg-primary rounded-r-full"></div>
         </button>
 
-        <!-- Transfers -->
+        <!-- History -->
         <button
           @click="currentView = 'transfers'"
-          :class="[
-            'relative p-3 rounded-xl flex items-center justify-center group transition-colors',
+          class="p-3 rounded-xl transition-all duration-300 relative group flex items-center justify-center"
+          :class="
             currentView === 'transfers' ? 'bg-primary/10 text-primary' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/50'
-          ]"
-          title="Transfers"
+          "
+          title="History"
         >
-          <ArrowRightLeft class="w-6 h-6 stroke-[1.5]" :class="currentView === 'transfers' ? 'stroke-2' : ''" />
+          <Clock class="w-6 h-6 stroke-[1.5]" :class="currentView === 'transfers' ? 'stroke-2' : ''" />
           <div v-if="currentView === 'transfers'" class="absolute inset-y-2 -left-4 w-1 bg-primary rounded-r-full"></div>
         </button>
 
@@ -260,9 +260,9 @@ const handleRejectFile = async (transferId: string) => {
         </template>
 
         <template v-else-if="currentView === 'transfers'">
-          <div class="w-full max-w-[800px] mt-4 pb-24">
-            <h2 class="text-headline-lg font-headline-lg text-on-surface tracking-tight mb-6">Transfers</h2>
-            <TransfersView :device-id="null" :device-name="'All Transfers'" />
+          <div class="flex-1 flex flex-col min-h-0 relative z-10 w-full max-w-7xl mx-auto px-6 md:px-12 py-8">
+            <h2 class="text-headline-lg font-headline-lg text-on-surface tracking-tight mb-6">History</h2>
+            <TransfersView :device-id="null" :device-name="'All History'" />
           </div>
         </template>
 

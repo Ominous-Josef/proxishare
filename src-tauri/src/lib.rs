@@ -261,8 +261,8 @@ async fn test_device_connectivity(
 
         match tm.ping_device(&ip, port, my_id, my_name).await {
             Ok(_) => Ok(true),
-            Err(e) => {
-                println!("[API] test_device_connectivity to {}:{} failed: {:?}", ip, port, e);
+            Err(_) => {
+                // Silently return false to prevent terminal spam during 15s background polling
                 Ok(false)
             }
         }
