@@ -3,6 +3,7 @@ import { ChevronLeft, Laptop, Smartphone, MonitorSmartphone } from "lucide-vue-n
 import AppButton from "./AppButton.vue";
 import FileTransfer from "./FileTransfer.vue";
 import TransfersView from "./TransfersView.vue";
+import FileTreeView from "./FileTreeView.vue";
 import { useFileTransfer } from "../composables/useFileTransfer";
 import { Activity, Upload, Download, PauseCircle, PlayCircle, XCircle } from "lucide-vue-next";
 import { computed } from "vue";
@@ -151,6 +152,16 @@ const formatSpeed = (bps: number) => {
               </div>
             </div>
             <span class="text-xs font-bold text-on-surface min-w-[36px] text-right">{{ t.progress.toFixed(0) }}%</span>
+          </div>
+
+          <!-- Live Folder Progress Tree -->
+          <div v-if="t.folderManifest && t.folderManifest.length > 0" class="w-full mt-4 max-h-[300px] overflow-y-auto custom-scrollbar border-t border-white/5 pt-4">
+            <FileTreeView 
+              :manifest="t.folderManifest" 
+              :current-file-path="t.currentFilePath"
+              :current-file-sent="t.currentFileSent"
+              :current-file-total="t.currentFileTotal"
+            />
           </div>
         </div>
       </div>

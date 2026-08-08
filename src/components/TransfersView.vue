@@ -1,19 +1,22 @@
 <script setup lang="ts">
 import { listen } from "@tauri-apps/api/event";
-import { 
-  Clock, 
-  File, 
+import {
+  Clock,
+  File,
   Folder,
-  RefreshCw, 
-  CheckCircle2, 
-  XCircle, 
-  AlertTriangle, 
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
   Circle,
   Trash2,
   Upload,
-  Download
+  Download,
+  ChevronDown,
+  ChevronRight
 } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
+import FileTreeView from "./FileTreeView.vue";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   TransferRecord,
@@ -38,6 +41,25 @@ const hasMore = ref(true);
 const loadMoreTrigger = ref<HTMLElement | null>(null);
 let observer: IntersectionObserver | null = null;
 
+const expandedHistory = ref<Set<string>>(new Set());
+
+const toggleHistory = (id: string) => {
+  if (expandedHistory.value.has(id)) {
+    expandedHistory.value.delete(id);
+  } else {
+    expandedHistory.value.add(id);
+  }
+};
+
+const getParsedManifest = (manifestStr?: string) => {
+  if (!manifestStr) return [];
+  try {
+    return JSON.parse(manifestStr);
+  } catch (e) {
+    return [];
+  }
+};
+
 const hasActiveTransfers = computed(() => {
   if (!props.deviceId) return false;
   return transfers.value.some(t => t.deviceId === props.deviceId && ['pending', 'in_progress', 'paused'].includes(t.status));
@@ -54,7 +76,7 @@ const loadData = async (reset = false) => {
     currentPage.value = 0;
     hasMore.value = true;
   }
-  
+
   if (!hasMore.value && !reset) return;
 
   isLoading.value = true;
@@ -68,7 +90,7 @@ const loadData = async (reset = false) => {
     } else {
       newRecords = await loadHistory(PAGE_SIZE, offset);
     }
-    
+
     if (newRecords.length < PAGE_SIZE) {
       hasMore.value = false;
     }
@@ -115,7 +137,7 @@ const formatDate = (timestamp: number) => {
   if (now.diff(dt, "days").days > 3) {
     return dt.toLocaleString(DateTime.DATE_MED);
   }
-  
+
   return dt.toRelative() || dt.toLocaleString(DateTime.DATE_MED);
 };
 
@@ -136,7 +158,7 @@ const handleClearHistory = async () => {
 
 <template>
   <div class="w-full h-full flex flex-col select-none">
-    
+
     <!-- History Section -->
     <div class="w-full flex-1 flex flex-col">
       <!-- Header -->
@@ -146,23 +168,13 @@ const handleClearHistory = async () => {
           {{ deviceId ? `History with ${deviceName || "Device"}` : "Transfer History" }}
         </h3>
         <div class="flex items-center gap-2">
-          <AppButton
-            v-if="deviceId"
-            variant="surface"
-            size="icon"
-            @click="loadData(true)"
+          <AppButton v-if="deviceId" variant="surface" size="icon" @click="loadData(true)"
             :disabled="isLoading || hasActiveTransfers"
-            :title="hasActiveTransfers ? 'Cannot sync while a transfer is active' : 'Sync History'"
-          >
+            :title="hasActiveTransfers ? 'Cannot sync while a transfer is active' : 'Sync History'">
             <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': isLoading }" />
           </AppButton>
-          <AppButton
-            v-if="displayHistory.length > 0 && !deviceId"
-            variant="danger-ghost"
-            size="icon"
-            @click="showClearConfirm = true"
-            title="Clear history"
-          >
+          <AppButton v-if="displayHistory.length > 0 && !deviceId" variant="danger-ghost" size="icon"
+            @click="showClearConfirm = true" title="Clear history">
             <Trash2 class="w-4 h-4" />
           </AppButton>
         </div>
@@ -171,26 +183,26 @@ const handleClearHistory = async () => {
       <!-- Content -->
       <div class="flex-1 overflow-y-auto">
         <!-- Loading (Initial) -->
-        <div v-if="isLoading && displayHistory.length === 0" class="h-full flex flex-col items-center justify-center text-on-surface-variant/60 gap-4 py-12">
+        <div v-if="isLoading && displayHistory.length === 0"
+          class="h-full flex flex-col items-center justify-center text-on-surface-variant/60 gap-4 py-12">
           <div class="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin"></div>
           <span class="text-sm">Loading history...</span>
         </div>
 
         <!-- Empty -->
-        <div v-else-if="displayHistory.length === 0 && !isLoading" class="h-full flex flex-col items-center justify-center text-on-surface-variant/50 gap-3 py-16">
+        <div v-else-if="displayHistory.length === 0 && !isLoading"
+          class="h-full flex flex-col items-center justify-center text-on-surface-variant/50 gap-3 py-16">
           <File class="w-10 h-10 opacity-50" />
           <p class="text-sm">No completed transfers yet</p>
         </div>
 
         <!-- List -->
-        <div v-else class="flex flex-col">
+        <template v-for="record in displayHistory" :key="record.id">
           <div
-            v-for="record in displayHistory"
-            :key="record.id"
-            class="flex items-center gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/5 transition-colors group"
-          >
+            class="flex items-center gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/5 transition-colors group">
             <!-- Direction Icon -->
-            <div class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" :class="record.direction === 'send' ? 'bg-primary/10 text-primary' : 'bg-secondary/10 text-secondary'">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+              :class="record.direction === 'send' ? 'bg-primary/10 text-primary' : 'bg-secondary/10 text-secondary'">
               <Upload v-if="record.direction === 'send'" class="w-5 h-5" />
               <Download v-else class="w-5 h-5" />
             </div>
@@ -200,7 +212,9 @@ const handleClearHistory = async () => {
               <div class="flex items-center gap-2">
                 <Folder v-if="record.is_dir" class="w-4 h-4 text-on-surface-variant shrink-0" />
                 <File v-else class="w-4 h-4 text-on-surface-variant shrink-0" />
-                <div class="text-body-md font-medium text-on-surface truncate" :class="{'line-through opacity-60 text-on-surface-variant': record.file_exists === false}">{{ record.file_name }}</div>
+                <div class="text-body-md font-medium text-on-surface truncate"
+                  :class="{ 'line-through opacity-60 text-on-surface-variant': record.file_exists === false }">{{
+                  record.file_name }}</div>
               </div>
               <div class="flex items-center gap-2 text-xs text-on-surface-variant/70 mt-1">
                 <span class="font-medium text-on-surface-variant">{{ formatBytes(record.total_size) }}</span>
@@ -209,18 +223,19 @@ const handleClearHistory = async () => {
                 <span v-else>File</span>
                 <span class="w-1 h-1 rounded-full bg-outline-variant/50"></span>
                 <span>{{ formatDate(record.created_at) }}</span>
-                <span v-if="record.file_exists === false" class="text-danger flex items-center gap-1 font-medium ml-2"><AlertTriangle class="w-3 h-3"/> Missing</span>
+                <span v-if="record.file_exists === false" class="text-danger flex items-center gap-1 font-medium ml-2">
+                  <AlertTriangle class="w-3 h-3" /> Missing
+                </span>
               </div>
             </div>
 
             <!-- Status Icon -->
-            <div class="shrink-0 flex items-center justify-center w-8 h-8 rounded-full" 
-              :class="{
-                'text-success bg-success/10': record.status === 'completed',
-                'text-danger bg-danger/10': record.status === 'failed' || record.status === 'cancelled',
-                'text-accent-orange bg-accent-orange/10': record.status === 'in_progress' || record.status === 'paused',
-                'text-on-surface-variant bg-white/5': !['completed','failed','cancelled','in_progress','paused'].includes(record.status)
-              }">
+            <div class="shrink-0 flex items-center justify-center w-8 h-8 rounded-full" :class="{
+              'text-success bg-success/10': record.status === 'completed',
+              'text-danger bg-danger/10': record.status === 'failed' || record.status === 'cancelled',
+              'text-accent-orange bg-accent-orange/10': record.status === 'in_progress' || record.status === 'paused',
+              'text-on-surface-variant bg-white/5': !['completed', 'failed', 'cancelled', 'in_progress', 'paused'].includes(record.status)
+            }">
               <CheckCircle2 v-if="record.status === 'completed'" class="w-4 h-4" />
               <XCircle v-else-if="record.status === 'failed'" class="w-4 h-4" />
               <AlertTriangle v-else-if="record.status === 'cancelled'" class="w-4 h-4" />
@@ -228,33 +243,52 @@ const handleClearHistory = async () => {
               <PauseCircle v-else-if="record.status === 'paused'" class="w-4 h-4" />
               <Circle v-else class="w-4 h-4" />
             </div>
+
+            <!-- Expand Icon (if folder) -->
+            <button v-if="record.is_dir && record.folder_manifest"
+              class="w-8 h-8 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors ml-2"
+              @click="toggleHistory(record.id)">
+              <ChevronDown v-if="expandedHistory.has(record.id)" class="w-5 h-5 text-on-surface-variant" />
+              <ChevronRight v-else class="w-5 h-5 text-on-surface-variant" />
+            </button>
+            <div v-else class="w-8 ml-2"></div>
           </div>
-          
-          <!-- Load More Trigger -->
-          <div ref="loadMoreTrigger" class="flex justify-center py-6 min-h-[60px]">
-            <div v-if="isLoading && displayHistory.length > 0" class="w-6 h-6 rounded-full border-2 border-primary/30 border-t-primary animate-spin"></div>
+
+          <!-- Expanded Folder Tree -->
+          <div v-if="expandedHistory.has(record.id) && record.folder_manifest"
+            class="px-6 py-4 border-b border-white/5 bg-surface-container-low/50">
+            <FileTreeView :manifest="getParsedManifest(record.folder_manifest)" :force-completed="true" />
           </div>
+        </template>
+
+        <!-- Load More Trigger -->
+        <div ref="loadMoreTrigger" class="flex justify-center py-6 min-h-[60px]">
+          <div v-if="isLoading && displayHistory.length > 0"
+            class="w-6 h-6 rounded-full border-2 border-primary/30 border-t-primary animate-spin"></div>
         </div>
       </div>
     </div>
-    
-    <!-- Clear Confirmation Modal -->
-    <Transition name="fade">
-      <div v-if="showClearConfirm" class="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click.self="showClearConfirm = false">
-        <div class="bg-surface-container-high rounded-xl p-6 border border-white/10 shadow-2xl text-center max-w-sm w-full mx-4">
-          <p class="text-on-surface mb-6 font-medium">Clear all transfer history?</p>
-          <div class="flex gap-3 w-full pt-2">
-            <AppButton variant="surface" class="flex-1" @click="showClearConfirm = false">
-              Cancel
-            </AppButton>
-            <AppButton variant="danger" class="flex-1" @click="handleClearHistory">
-              Clear All
-            </AppButton>
-          </div>
+  </div>
+
+  <!-- Clear Confirmation Modal -->
+  <Transition name="fade">
+    <div v-if="showClearConfirm"
+      class="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm"
+      @click.self="showClearConfirm = false">
+      <div
+        class="bg-surface-container-high rounded-xl p-6 border border-white/10 shadow-2xl text-center max-w-sm w-full mx-4">
+        <p class="text-on-surface mb-6 font-medium">Clear all transfer history?</p>
+        <div class="flex gap-3 w-full pt-2">
+          <AppButton variant="surface" class="flex-1" @click="showClearConfirm = false">
+            Cancel
+          </AppButton>
+          <AppButton variant="danger" class="flex-1" @click="handleClearHistory">
+            Clear All
+          </AppButton>
         </div>
       </div>
-    </Transition>
-  </div>
+    </div>
+  </Transition>
 </template>
 
 <style scoped>
@@ -262,13 +296,19 @@ const handleClearHistory = async () => {
 .fade-leave-active {
   transition: opacity 0.2s ease;
 }
+
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
 }
 
 @keyframes shimmer {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(100%);
+  }
 }
 </style>

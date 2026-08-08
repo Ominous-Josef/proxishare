@@ -8,7 +8,6 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { type UnlistenFn } from "@tauri-apps/api/event";
 import { FolderUp, MonitorSmartphone, Laptop, Upload, PackageOpen } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
-import FileTreeView from "./FileTreeView.vue";
 
 const props = defineProps<{
   deviceId: string | null;
@@ -148,18 +147,6 @@ onUnmounted(() => {
         </Transition>
 
       </div>
-      
-      <!-- Live Folder Progress Tree -->
-      <Transition name="fade">
-        <div v-if="currentTransfer?.folderManifest && currentTransfer.folderManifest.length > 0" class="w-full px-8 mt-6 max-h-[300px] overflow-y-auto custom-scrollbar border-t border-white/5 pt-4">
-          <FileTreeView 
-            :manifest="currentTransfer.folderManifest" 
-            :current-file-path="currentTransfer.currentFilePath"
-            :current-file-sent="currentTransfer.currentFileSent"
-            :current-file-total="currentTransfer.currentFileTotal"
-          />
-        </div>
-      </Transition>
 
       <!-- Dropzone Instructions -->
       <div class="mt-6 flex flex-col items-center z-20 min-h-[100px] justify-center">

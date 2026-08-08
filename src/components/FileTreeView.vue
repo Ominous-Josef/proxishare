@@ -8,6 +8,7 @@ const props = defineProps<{
   currentFilePath?: string;
   currentFileSent?: number;
   currentFileTotal?: number;
+  forceCompleted?: boolean;
 }>();
 
 // Build a tree structure
@@ -65,7 +66,10 @@ const tree = computed(() => {
     }
     
     // Set active/completed state for the file
-    if (props.currentFilePath) {
+    if (props.forceCompleted) {
+       current.isCompleted = true;
+       current.progress = 100;
+    } else if (props.currentFilePath) {
        // Compare normalized paths
        const normalizedPropPath = props.currentFilePath.replace(/\\/g, '/');
        const normalizedNodePath = current.path.replace(/\\/g, '/');

@@ -61,6 +61,10 @@ impl FileReceiver {
         let mut current_file_size: u64 = 0;
         let mut last_status = crate::TransferStatus::InProgress;
         let mut is_dir = false;
+        
+        let mut current_sub_file_path: Option<String> = None;
+        let mut current_sub_file_size: Option<u64> = None;
+        let mut current_sub_file_received: Option<u64> = None;
 
         let mut status_ticker = tokio::time::interval(std::time::Duration::from_millis(500));
 
@@ -222,6 +226,9 @@ impl FileReceiver {
                                 _ => "in_progress",
                             }
                             .to_string(),
+                            current_file_path: current_sub_file_path.clone(),
+                            current_file_sent: current_sub_file_received,
+                            current_file_total: current_sub_file_size,
                             ..Default::default()
                         },
                     );
@@ -470,6 +477,10 @@ impl FileReceiver {
                         size,
                     } => {
                         if transfer_id == current_transfer_id {
+                            current_sub_file_path = Some(relative_path.clone());
+                            current_sub_file_size = Some(size);
+                            current_sub_file_received = Some(0);
+                            
                             // Close previous file if any
                             if let Some(mut f) = file.take() {
                                 let _ = f.flush().await;
@@ -529,6 +540,9 @@ impl FileReceiver {
                             bytes_received += data.len() as u64;
 
                             // Emit progress event
+                            if let Some(received) = &mut current_sub_file_received {
+                                *received += data.len() as u64;
+                            }
                             let _ = self.app_handle.emit(
                                 "transfer-progress",
                                 TransferProgress {
@@ -544,7 +558,9 @@ impl FileReceiver {
                                         _ => "in_progress",
                                     }
                                     .to_string(),
-
+                                    current_file_path: current_sub_file_path.clone(),
+                                    current_file_sent: current_sub_file_received,
+                                    current_file_total: current_sub_file_size,
                                     ..Default::default()
                                 },
                             );
@@ -569,7 +585,9 @@ impl FileReceiver {
                                 total_bytes: current_file_size,
                                 direction: "receive".to_string(),
                                 status: "paused".to_string(),
-
+                                current_file_path: current_sub_file_path.clone(),
+                                current_file_sent: current_sub_file_received,
+                                current_file_total: current_sub_file_size,
                                 ..Default::default()
                             },
                         );
@@ -600,7 +618,9 @@ impl FileReceiver {
                                     _ => "in_progress",
                                 }
                                 .to_string(),
-
+                                current_file_path: current_sub_file_path.clone(),
+                                current_file_sent: current_sub_file_received,
+                                current_file_total: current_sub_file_size,
                                 ..Default::default()
                             },
                         );
