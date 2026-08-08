@@ -34,17 +34,12 @@ const formatTime = (seconds: number) => {
   return `${m}:${s.toString().padStart(2, "0")}`;
 };
 
-watch(() => props.isOpen, (val) => {
-  if (val) {
-    startTimer();
-  } else {
-    stopTimer();
+const stopTimer = () => {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
   }
-}, { immediate: true });
-
-onUnmounted(() => {
-  stopTimer();
-});
+};
 
 const startTimer = () => {
   timeLeft.value = 300;
@@ -58,12 +53,17 @@ const startTimer = () => {
   }, 1000);
 };
 
-const stopTimer = () => {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
+watch(() => props.isOpen, (val) => {
+  if (val) {
+    startTimer();
+  } else {
+    stopTimer();
   }
-};
+}, { immediate: true });
+
+onUnmounted(() => {
+  stopTimer();
+});
 </script>
 
 <template>

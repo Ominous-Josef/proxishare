@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { onUnmounted, ref } from "vue";
+import { useToast } from "./useToast";
 
 export interface Transfer {
   id: string;
@@ -63,6 +64,7 @@ export function useFileTransfer() {
   let unlistenProgress: UnlistenFn | null = null;
   let unlistenFolderManifest: UnlistenFn | null = null;
   let unlistenHistory: UnlistenFn | null = null;
+  const { addToast } = useToast();
 
   // Setup progress listener
   const setupProgressListener = async () => {
@@ -82,6 +84,10 @@ export function useFileTransfer() {
         // Prevent reverting status if we already cancelled locally
         if (existing && existing.status === "cancelled" && progress.status === "in_progress") {
           return;
+        }
+
+        if (progress.status === "failed" && progress.direction === "send" && (!existing || existing.status !== "failed")) {
+            addToast(`Transfer of ${progress.file_name} was declined or failed.`, "error");
         }
 
         const now = Date.now();
