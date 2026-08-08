@@ -1,6 +1,6 @@
 [package]
 name = "proxishare"
-version = "0.1.0"
+version = "1.0.0"
 description = "Transfer files between devices"
 authors = ["Joseph Ohwonohwo"]
 edition = "2021"
