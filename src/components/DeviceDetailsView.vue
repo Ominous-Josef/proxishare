@@ -83,16 +83,17 @@ const formatSpeed = (bps: number) => {
     </div>
 
     <!-- Active Transfers -->
-    <div v-if="activeTransfers.length > 0" class="w-full max-w-[900px] mx-auto bg-surface-container-low border border-white/5 rounded-2xl flex flex-col overflow-hidden mb-8">
-      <div class="flex justify-between items-center px-6 py-4 border-b border-white/5 bg-primary/5">
-        <h3 class="flex items-center gap-2 text-body-md font-medium text-primary">
-          <Activity class="w-4 h-4" />
-          Active Transfers
-        </h3>
-      </div>
-      
-      <div class="flex flex-col">
-        <div v-for="t in activeTransfers" :key="t.id" class="flex flex-col gap-3 px-6 py-5 border-b border-white/5">
+    <Transition name="fade" mode="out-in">
+      <div v-if="activeTransfers.length > 0" class="w-full max-w-[900px] mx-auto bg-surface-container-low border border-white/5 rounded-2xl flex flex-col overflow-hidden mb-8">
+        <div class="flex justify-between items-center px-6 py-4 border-b border-white/5 bg-primary/5">
+          <h3 class="flex items-center gap-2 text-body-md font-medium text-primary">
+            <Activity class="w-4 h-4" />
+            Active Transfers
+          </h3>
+        </div>
+        
+        <TransitionGroup name="list" tag="div" class="flex flex-col relative">
+          <div v-for="t in activeTransfers" :key="t.id" class="flex flex-col gap-3 px-6 py-5 border-b border-white/5 bg-surface-container-low">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-4 min-w-0">
               <div class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" :class="t.direction === 'send' ? 'bg-primary/10 text-primary' : 'bg-secondary/10 text-secondary'">
@@ -163,9 +164,10 @@ const formatSpeed = (bps: number) => {
               :current-file-total="t.currentFileTotal"
             />
           </div>
-        </div>
+          </div>
+        </TransitionGroup>
       </div>
-    </div>
+    </Transition>
 
     <!-- History Area -->
     <div class="w-full">

@@ -197,9 +197,10 @@ const handleClearHistory = async () => {
         </div>
 
         <!-- List -->
-        <template v-for="record in displayHistory" :key="record.id">
-          <div
-            class="flex items-center gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/5 transition-colors group">
+        <TransitionGroup name="list" tag="div" class="flex flex-col relative w-full">
+          <div v-for="record in displayHistory" :key="record.id" class="flex flex-col w-full bg-surface-container-lowest">
+            <div
+              class="flex items-center gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/5 transition-colors group">
             <!-- Direction Icon -->
             <div class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
               :class="record.direction === 'send' ? 'bg-primary/10 text-primary' : 'bg-secondary/10 text-secondary'">
@@ -254,12 +255,13 @@ const handleClearHistory = async () => {
             <div v-else class="w-8 ml-2"></div>
           </div>
 
-          <!-- Expanded Folder Tree -->
-          <div v-if="expandedHistory.has(record.id) && record.folder_manifest"
-            class="px-6 py-4 border-b border-white/5 bg-surface-container-low/50">
-            <FileTreeView :manifest="getParsedManifest(record.folder_manifest)" :force-completed="true" />
+            <!-- Expanded Folder Tree -->
+            <div v-if="expandedHistory.has(record.id) && record.folder_manifest"
+              class="px-6 py-4 border-b border-white/5 bg-surface-container-low/50">
+              <FileTreeView :manifest="getParsedManifest(record.folder_manifest)" :force-completed="true" />
+            </div>
           </div>
-        </template>
+        </TransitionGroup>
 
         <!-- Load More Trigger -->
         <div ref="loadMoreTrigger" class="flex justify-center py-6 min-h-[60px]">
@@ -310,5 +312,18 @@ const handleClearHistory = async () => {
   100% {
     transform: translateX(100%);
   }
+}
+
+.list-enter-active,
+.list-leave-active {
+  transition: all 0.4s ease;
+}
+.list-enter-from,
+.list-leave-to {
+  opacity: 0;
+  transform: translateY(-20px);
+}
+.list-leave-active {
+  position: absolute;
 }
 </style>
