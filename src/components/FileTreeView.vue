@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { ChevronRight, ChevronDown, File, Folder, CheckCircle2, Circle } from 'lucide-vue-next';
 import FileTreeNode from './FileTreeNode.vue';
 
@@ -104,6 +104,14 @@ const formatSize = (bytes: number) => {
 
 const expandedNodes = ref<Set<string>>(new Set([''])); // Root expanded by default
 
+watch(() => tree.value, (newTree) => {
+  for (const key in newTree.children) {
+    if (newTree.children[key].isDir) {
+      expandedNodes.value.add(newTree.children[key].path);
+    }
+  }
+}, { immediate: true });
+
 const toggleExpand = (path: string) => {
   if (expandedNodes.value.has(path)) {
     expandedNodes.value.delete(path);
@@ -118,22 +126,10 @@ const toggleExpand = (path: string) => {
     <template v-for="node in tree.children" :key="node.path">
       <FileTreeNode 
         :node="node" 
-        :expanded="expandedNodes.has(node.path)"
+        :is-expanded="(path) => expandedNodes.has(path)"
         @toggle="toggleExpand"
         :format-size="formatSize"
       />
-      <!-- We render children if expanded -->
-      <div v-if="node.isDir && expandedNodes.has(node.path)" class="pl-4 ml-2 border-l border-white/10 flex flex-col gap-1 my-1">
-         <template v-for="child in node.children" :key="child.path">
-           <FileTreeNode 
-             :node="child" 
-             :expanded="expandedNodes.has(child.path)"
-             @toggle="toggleExpand"
-             :format-size="formatSize"
-           />
-           <!-- Recursively handled? Vue 3 doesn't easily allow self-referencing within the same file without defineOptions/name or a separate component. Let's make a separate component for the node. -->
-         </template>
-      </div>
     </template>
   </div>
 </template>

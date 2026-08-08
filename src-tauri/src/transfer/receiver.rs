@@ -448,6 +448,15 @@ impl FileReceiver {
                                     "files": files
                                 }),
                             );
+                            
+                            // Save manifest to database for history view
+                            if let Ok(manifest_json) = serde_json::to_string(&files) {
+                                let db_lock = self.database.read().await;
+                                if let Some(db) = &*db_lock {
+                                    let _ = db.update_folder_manifest(&transfer_id, &manifest_json).await;
+                                }
+                            }
+
                             let base_path = self.save_directory.join(&current_file_name);
                             for file_entry in files {
                                 // Protect against path traversal again

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onUnmounted, watch } from "vue";
+import { ref, onUnmounted, watch, computed } from "vue";
 import { FileDown, X } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
 
@@ -34,10 +34,32 @@ let timer: ReturnType<typeof setInterval> | null = null;
 const formatSize = (bytes: number) => {
   if (bytes === 0) return "0 B";
   const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB"];
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 };
+
+const directoryInfo = computed(() => {
+  if (!props.isDir) return '';
+  const fc = props.fileCount || 0;
+  const sc = props.subfolderCount || 0;
+  let text = '';
+  
+  if (fc === 0 && sc === 0) {
+    text = 'Folder is empty.';
+  } else if (sc === 0) {
+    text = `Contains ${fc} file${fc !== 1 ? 's' : ''}.`;
+  } else {
+    text = `Contains ${fc} file${fc !== 1 ? 's' : ''} across ${sc} folder${sc !== 1 ? 's' : ''}.`;
+  }
+  
+  if (fc > 0 && props.topExtensions && props.topExtensions.length > 0) {
+    const exts = props.topExtensions.map(e => e.toUpperCase()).join(', ');
+    text = text.replace('.', ` (Mostly ${exts}).`);
+  }
+  
+  return text;
+});
 
 const formatTime = (seconds: number) => {
   const m = Math.floor(seconds / 60);
@@ -102,20 +124,20 @@ onUnmounted(() => {
         </div>
 
         <div v-if="isDir" class="w-full text-left text-xs text-on-surface-variant mb-6 px-2">
-            Contains {{ fileCount || '?' }} files across {{ subfolderCount || '0' }} folders<span v-if="topExtensions && topExtensions.length > 0"> (Mostly {{ topExtensions.map(e => e.toUpperCase()).join(', ') }})</span>.
+            {{ directoryInfo }}
         </div>
 
         <div v-if="fileExists" class="w-full mb-6 text-left px-2">
           <div class="text-sm font-semibold text-warning mb-2 flex items-center gap-2">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-triangle-alert"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-            File already exists!
+            {{ isDir ? 'Folder' : 'File' }} already exists!
           </div>
-          <p class="text-xs text-on-surface-variant mb-3">Accepting will overwrite the existing file. Alternatively, you can save it as a new name.</p>
+          <p class="text-xs text-on-surface-variant mb-3">Accepting will overwrite the existing {{ isDir ? 'folder' : 'file' }}. Alternatively, you can save it as a new name.</p>
           <input 
             type="text" 
             v-model="newFileName"
             class="w-full bg-surface-container border border-white/10 rounded-lg px-3 py-2 text-sm text-on-surface focus:outline-none focus:border-primary transition-colors"
-            placeholder="New file name"
+            :placeholder="isDir ? 'New folder name' : 'New file name'"
             @keyup.enter="emit('accept', transferId, newFileName !== fileName ? newFileName : undefined)"
           />
         </div>
