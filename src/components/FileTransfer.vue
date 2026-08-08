@@ -6,7 +6,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { type UnlistenFn } from "@tauri-apps/api/event";
-import { CloudUpload, FolderUp, MonitorSmartphone, Laptop, FileUp, X, Upload, Pause, Play, PackageOpen } from "lucide-vue-next";
+import { FolderUp, MonitorSmartphone, Laptop, Upload, PackageOpen } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
 
 const props = defineProps<{
@@ -16,7 +16,7 @@ const props = defineProps<{
   targetPort: number | null;
 }>();
 
-const { sendFile, transfers, cancelTransfer, pauseTransfer, resumeTransfer } = useFileTransfer();
+const { sendFile, transfers } = useFileTransfer();
 const isSending = ref(false);
 const { addToast } = useToast();
 const isDragOver = ref(false);
@@ -28,19 +28,6 @@ const activeDeviceTransfers = computed(() => {
 const currentTransfer = computed(() => {
   return activeDeviceTransfers.value[0] || null;
 });
-
-const formatSpeed = (bytesPerSec?: number) => {
-  if (!bytesPerSec || bytesPerSec <= 0) return "-- MB/s";
-  return (bytesPerSec / 1024 / 1024).toFixed(1) + " MB/s";
-};
-
-const formatTime = (secs?: number) => {
-  if (!secs || !isFinite(secs) || secs <= 0) return "--";
-  if (secs < 60) return Math.ceil(secs) + "s";
-  const m = Math.floor(secs / 60);
-  const s = Math.ceil(secs % 60);
-  return `${m}m ${s}s`;
-};
 
 const selectAndSend = async (isFolder: boolean = false) => {
   if (!props.deviceId || !props.targetIp || !props.targetPort) {
@@ -203,63 +190,6 @@ onUnmounted(() => {
          </Transition>
       </div>
     </div>
-
-    <!-- Active Transfers Section -->
-    <div v-if="activeDeviceTransfers.length > 0" class="w-full flex flex-col gap-4">
-      <h3 class="font-body-sm text-on-surface-variant font-semibold tracking-wider uppercase pl-2 border-l-2 border-primary">Active Transfers</h3>
-      
-      <div class="flex flex-col gap-3">
-        <div 
-          v-for="transfer in activeDeviceTransfers" 
-          :key="transfer.id"
-          class="bg-surface-container-low border border-white/10 rounded-2xl p-4 flex flex-col shadow-lg transition-all duration-300"
-        >
-          <div class="flex items-center justify-between mb-3">
-            <div class="flex items-center gap-3 overflow-hidden">
-              <div class="bg-surface-variant/30 p-2 rounded-xl border border-white/5">
-                <CloudUpload v-if="transfer.direction === 'send'" class="w-5 h-5 text-secondary animate-pulse shrink-0" />
-                <FileUp v-else class="w-5 h-5 text-primary animate-pulse shrink-0" />
-              </div>
-              <div class="flex flex-col min-w-0">
-                <span class="font-body-md font-semibold text-on-surface truncate">{{ transfer.fileName }}</span>
-                <span class="text-xs text-on-surface-variant mt-0.5">
-                   {{ transfer.status === 'paused' ? 'Paused' : 'Transferring' }} • {{ (transfer.bytesTransferred / 1024 / 1024).toFixed(1) }} MB of {{ (transfer.totalBytes / 1024 / 1024).toFixed(1) }} MB
-                </span>
-                <div v-if="transfer.status === 'in_progress'" class="flex gap-2 text-[10px] text-on-surface-variant/80 mt-1 uppercase tracking-wider font-semibold">
-                   <span>{{ formatSpeed(transfer.speed) }}</span>
-                   <span v-if="transfer.timeRemaining && transfer.timeRemaining > 0">•</span>
-                   <span v-if="transfer.timeRemaining && transfer.timeRemaining > 0">{{ formatTime(transfer.timeRemaining) }} left</span>
-                </div>
-              </div>
-            </div>
-            
-            <div class="flex items-center gap-1.5 shrink-0 ml-4">
-              <AppButton v-if="transfer.status === 'in_progress'" @click="pauseTransfer(transfer.id)" variant="surface-variant" size="icon" title="Pause">
-                <Pause class="w-4 h-4 fill-current" />
-              </AppButton>
-              <AppButton v-else-if="transfer.status === 'paused'" @click="resumeTransfer(transfer.id)" variant="surface-variant" size="icon" title="Resume">
-                <Play class="w-4 h-4 fill-current" />
-              </AppButton>
-              <AppButton @click="cancelTransfer(transfer.id)" variant="danger" size="icon" title="Cancel">
-                <X class="w-4 h-4" />
-              </AppButton>
-            </div>
-          </div>
-          
-          <div class="w-full flex items-center gap-3">
-             <span class="text-primary font-code-display text-[12px] font-bold w-10 shrink-0">{{ transfer.progress }}%</span>
-             <div class="flex-1 h-1.5 bg-surface-variant rounded-full overflow-hidden shadow-inner relative">
-                <div 
-                   class="absolute left-0 top-0 h-full rounded-full transition-all duration-300"
-                   :class="transfer.status === 'paused' ? 'bg-surface-variant/60' : 'bg-primary'"
-                   :style="{ width: `${transfer.progress}%` }"
-                ></div>
-             </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
   </div>
 </template>
 
