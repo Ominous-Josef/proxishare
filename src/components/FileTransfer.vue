@@ -3,7 +3,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useFileTransfer } from "../composables/useFileTransfer";
 import { useToast } from "../composables/useToast";
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { type UnlistenFn } from "@tauri-apps/api/event";
 import { CloudUpload, FolderUp, MonitorSmartphone, Laptop, FileUp, X, Upload, Pause, Play, PackageOpen } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
 
@@ -72,39 +74,30 @@ const selectAndSend = async (isFolder: boolean = false) => {
 };
 
 let unlistenDrop: UnlistenFn | null = null;
-let unlistenDragEnter: UnlistenFn | null = null;
-let unlistenDragLeave: UnlistenFn | null = null;
 
 onMounted(async () => {
-  // Setup global tauri file drop listener
-  unlistenDrop = await listen<{ paths: string[] }>('tauri://drop', async (event) => {
-    isDragOver.value = false;
-    if (!props.deviceId || !props.targetIp || !props.targetPort) return;
-    
-    const paths = event.payload.paths;
-    if (paths && paths.length > 0) {
-      for (const path of paths) {
-        // Assume file for now, Tauri drop doesn't easily tell file vs dir without fs stat.
-        // We will pass false for isFolder, the Rust backend handles it if it's actually a file.
-        // If it's a folder, it might fail in Rust if we don't know, but we can update that later.
-        await sendFile(props.deviceId, path, props.targetIp, props.targetPort, false);
+  unlistenDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
+    if (event.payload.type === 'enter' || event.payload.type === 'over') {
+      isDragOver.value = true;
+    } else if (event.payload.type === 'leave') {
+      isDragOver.value = false;
+    } else if (event.payload.type === 'drop') {
+      isDragOver.value = false;
+      if (!props.deviceId || !props.targetIp || !props.targetPort) return;
+      
+      const paths = event.payload.paths;
+      if (paths && paths.length > 0) {
+        for (const path of paths) {
+          const isFolder = await invoke<boolean>("is_dir", { path }).catch(() => false);
+          await sendFile(props.deviceId, path, props.targetIp, props.targetPort, isFolder);
+        }
       }
     }
-  });
-
-  unlistenDragEnter = await listen('tauri://drag-enter', () => {
-    isDragOver.value = true;
-  });
-
-  unlistenDragLeave = await listen('tauri://drag-leave', () => {
-    isDragOver.value = false;
   });
 });
 
 onUnmounted(() => {
   if (unlistenDrop) unlistenDrop();
-  if (unlistenDragEnter) unlistenDragEnter();
-  if (unlistenDragLeave) unlistenDragLeave();
 });
 
 </script>

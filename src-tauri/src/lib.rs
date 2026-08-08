@@ -272,6 +272,14 @@ async fn test_device_connectivity(
 }
 
 #[tauri::command]
+async fn is_dir(path: String) -> Result<bool, String> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
 async fn find_reachable_device_ip(
     device_id: String,
     state: tauri::State<'_, AppState>,
@@ -802,6 +810,7 @@ pub fn run() {
             get_trusted_devices,
             is_device_trusted,
             test_device_connectivity,
+            is_dir,
             find_reachable_device_ip,
             get_network_diagnostics,
             get_local_network_interfaces,

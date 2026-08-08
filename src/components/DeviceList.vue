@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { Device } from "../composables/useDevices";
-import { MonitorSmartphone, Laptop, Smartphone, Radar, Settings2, Trash2, Network, Activity, Upload, Download, PauseCircle, PlayCircle, XCircle } from "lucide-vue-next";
+import { MonitorSmartphone, Laptop, Smartphone, Radar, Settings2, Trash2, Network, Activity, Upload, Download, PauseCircle, PlayCircle, XCircle, ChevronRight } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
 import { useFileTransfer } from "../composables/useFileTransfer";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 const props = defineProps<{
   devices: Device[];
@@ -26,7 +27,7 @@ const formatLastSeen = (timestamp: number) => {
   return `${Math.floor(seconds / 3600)}h ago`;
 };
 
-const { transfers, pauseTransfer, resumeTransfer, cancelTransfer } = useFileTransfer();
+const { transfers, pauseTransfer, resumeTransfer, cancelTransfer, sendFile } = useFileTransfer();
 
 const activeTransfers = computed(() => transfers.value);
 
@@ -76,6 +77,45 @@ const connectManually = async () => {
     isConnecting.value = false;
   }
 };
+
+const hoveredDeviceId = ref<string | null>(null);
+let unlistenDrop: (() => void) | null = null;
+
+
+onMounted(async () => {
+  unlistenDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
+    if (event.payload.type === 'enter' || event.payload.type === 'over') {
+      // Find which device card we are hovering over using screen coordinates
+      const logicalX = event.payload.position.x / window.devicePixelRatio;
+      const logicalY = event.payload.position.y / window.devicePixelRatio;
+      const el = document.elementFromPoint(logicalX, logicalY);
+      const card = el?.closest('[data-device-id]');
+      if (card) {
+        hoveredDeviceId.value = card.getAttribute('data-device-id');
+      } else {
+        hoveredDeviceId.value = null;
+      }
+    } else if (event.payload.type === 'leave') {
+      hoveredDeviceId.value = null;
+    } else if (event.payload.type === 'drop') {
+      const targetId = hoveredDeviceId.value;
+      hoveredDeviceId.value = null;
+      if (targetId) {
+        const targetDevice = props.devices.find(d => d.id === targetId);
+        if (targetDevice) {
+           for (const path of event.payload.paths) {
+             const isFolder = await invoke<boolean>("is_dir", { path }).catch(() => false);
+             await sendFile(targetId, path, targetDevice.ip, targetDevice.port, isFolder);
+           }
+        }
+      }
+    }
+  });
+});
+
+onUnmounted(() => {
+  if (unlistenDrop) unlistenDrop();
+});
 </script>
 
 <template>
@@ -196,23 +236,24 @@ const connectManually = async () => {
         <div
           v-for="device in activeDevices"
           :key="device.id"
+          :data-device-id="device.id"
           @click="emit('select', device.id)"
-          class="bg-surface-container-high border rounded-xl p-5 flex items-center gap-4 relative overflow-hidden group shadow-[0_10px_30px_rgba(0,0,0,0.2)] transition-colors cursor-pointer"
+          class="bg-surface-container-high border border-secondary/30 rounded-xl p-5 flex items-center gap-4 relative overflow-hidden group shadow-[0_10px_30px_rgba(0,0,0,0.2)] transition-all hover:border-secondary/60 cursor-pointer hover:-translate-y-1"
           :class="[
-             device.id === selectedId ? 'border-primary' : 'border-secondary/30 hover:border-secondary/60',
+             hoveredDeviceId === device.id ? 'ring-2 ring-primary border-primary bg-primary/10 scale-[1.02] shadow-[0_0_20px_theme(\'colors.primary\')]' : ''
           ]"
         >
           <!-- Subtle Glow -->
-          <div class="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity" :class="device.id === selectedId ? 'bg-primary/5' : 'bg-secondary/5'"></div>
+          <div class="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity bg-secondary/5"></div>
           
           <!-- Avatar / Status -->
           <div class="relative z-10">
-            <div :class="['w-14 h-14 rounded-full border-2 flex items-center justify-center bg-surface-container shadow-lg', device.id === selectedId ? 'border-primary' : 'border-secondary']">
-               <Laptop v-if="device.name.toLowerCase().includes('mac') || device.name.toLowerCase().includes('pc')" :class="['w-6 h-6', device.id === selectedId ? 'text-primary' : 'text-secondary']" />
-               <Smartphone v-else-if="device.name.toLowerCase().includes('phone')" :class="['w-6 h-6', device.id === selectedId ? 'text-primary' : 'text-secondary']" />
-               <MonitorSmartphone v-else :class="['w-6 h-6', device.id === selectedId ? 'text-primary' : 'text-secondary']" />
+            <div class="w-14 h-14 rounded-full border-2 border-secondary flex items-center justify-center bg-surface-container shadow-lg group-hover:border-primary transition-colors">
+               <Laptop v-if="device.name.toLowerCase().includes('mac') || device.name.toLowerCase().includes('pc')" class="w-6 h-6 text-secondary group-hover:text-primary transition-colors" />
+               <Smartphone v-else-if="device.name.toLowerCase().includes('phone')" class="w-6 h-6 text-secondary group-hover:text-primary transition-colors" />
+               <MonitorSmartphone v-else class="w-6 h-6 text-secondary group-hover:text-primary transition-colors" />
             </div>
-            <div :class="['absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-surface-container-high z-10 flex items-center justify-center', device.id === selectedId ? 'bg-primary' : 'bg-secondary']"></div>
+            <div class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-surface-container-high z-10 flex items-center justify-center bg-secondary group-hover:bg-primary transition-colors"></div>
           </div>
           
           <!-- Info -->
@@ -237,15 +278,10 @@ const connectManually = async () => {
           
           <!-- Actions -->
           <div class="flex items-center gap-2 z-10 shrink-0">
-            <AppButton v-if="device.isTrusted" size="icon" variant="ghost" class="group/btn shrink-0" title="Manage Permissions" @click.stop>
-              <Settings2 class="w-5 h-5 group-hover/btn:text-primary" />
-            </AppButton>
             <AppButton v-if="!device.isTrusted" @click.stop="emit('pair', device.id)" size="sm" variant="outline" class="shrink-0 text-primary border-primary/30 hover:bg-primary/10">
               Pair
             </AppButton>
-            <AppButton v-if="device.id === selectedId" @click.stop="emit('select', '')" size="sm" variant="outline" class="shrink-0">
-              Unselect
-            </AppButton>
+            <ChevronRight class="w-6 h-6 text-on-surface-variant/40 group-hover:text-primary transition-colors ml-2" />
           </div>
         </div>
 
@@ -265,8 +301,16 @@ const connectManually = async () => {
     <div v-if="savedDevices.length > 0" class="mt-8">
       <h3 class="font-label-caps text-label-caps text-on-surface-variant uppercase tracking-widest mb-4">Saved Devices</h3>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        
-        <div v-for="device in savedDevices" :key="device.id" class="bg-surface-container-low border border-white/5 rounded-xl p-4 flex flex-col gap-4 hover:border-white/20 transition-all hover:-translate-y-1">
+        <div 
+          v-for="device in savedDevices" 
+          :key="device.id"
+          :data-device-id="device.id"
+          @click="emit('select', device.id)"
+          class="bg-surface-container-low border border-white/5 rounded-xl p-4 flex flex-col gap-4 hover:border-white/20 transition-all hover:-translate-y-1 cursor-pointer group"
+          :class="[
+            hoveredDeviceId === device.id ? 'ring-2 ring-primary border-primary bg-primary/5 scale-[1.02] shadow-lg' : ''
+          ]"
+        >
           <div class="flex justify-between items-start">
             <div class="w-12 h-12 rounded-full bg-surface-bright flex items-center justify-center grayscale opacity-70">
                <Laptop v-if="device.name.toLowerCase().includes('mac') || device.name.toLowerCase().includes('pc')" class="w-6 h-6 text-on-surface" />
@@ -279,13 +323,16 @@ const connectManually = async () => {
             <h4 class="font-body-md text-body-md font-semibold text-on-surface truncate">{{ device.name }}</h4>
             <p class="font-body-sm text-body-sm text-on-surface-variant mt-1">Last seen: {{ formatLastSeen(device.last_seen) }}</p>
           </div>
-          <div class="mt-auto pt-4 border-t border-white/5 flex gap-2">
-            <AppButton class="flex-1" size="xs" variant="surface-variant">
-              Permissions
-            </AppButton>
-            <AppButton size="xs" variant="danger-ghost" title="Forget Device">
-              <Trash2 class="w-4 h-4" />
-            </AppButton>
+          <div class="mt-auto pt-4 border-t border-white/5 flex items-center justify-between">
+            <div class="flex gap-2 flex-1">
+              <AppButton class="flex-1" size="xs" variant="surface-variant" @click.stop>
+                Permissions
+              </AppButton>
+              <AppButton size="xs" variant="danger-ghost" title="Forget Device" @click.stop>
+                <Trash2 class="w-4 h-4" />
+              </AppButton>
+            </div>
+            <ChevronRight class="w-5 h-5 text-on-surface-variant/30 group-hover:text-primary transition-colors ml-2" />
           </div>
         </div>
 

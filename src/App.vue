@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { computed, onMounted, ref, watchEffect } from "vue";
 import DeviceList from "./components/DeviceList.vue";
-import FileTransfer from "./components/FileTransfer.vue";
+import DeviceDetailsView from "./components/DeviceDetailsView.vue";
 import PairingDialog from "./components/PairingDialog.vue";
 import SettingsView from "./components/SettingsView.vue";
 import TransfersView from "./components/TransfersView.vue";
@@ -16,11 +16,13 @@ import { useToast } from "./composables/useToast";
 import { useSettings } from "./composables/useSettings";
 import { Share2, Settings, X, Laptop, Radar, Clock } from "lucide-vue-next";
 
+type View = "devices" | "transfers" | "settings" | "device-details";
+
 const { devices, isDiscovering, refreshDevices, triggerScan } = useDevices();
 const { addToast } = useToast();
 const { settings, loadSettings } = useSettings();
 const selectedId = ref<string | null>(null);
-const currentView = ref<"devices" | "transfers" | "settings">("devices");
+const currentView = ref<View>("devices");
 
 const pairingRequest = ref<{
   device: Device;
@@ -46,6 +48,9 @@ const selectedDevice = computed(
 
 const handleSelect = (id: string) => {
   selectedId.value = id;
+  if (id) {
+    currentView.value = 'device-details';
+  }
 };
 
 const handlePair = async (id: string) => {
@@ -61,6 +66,7 @@ const handlePair = async (id: string) => {
       console.log("[Pairing] Pairing initiated, code:", code);
       senderPairingCode.value = code;
       await refreshDevices();
+      handleSelect(id);
     } catch (e) {
       console.error("[Pairing] Failed:", e);
       addToast("Failed to pair device: " + e, "error");
@@ -84,6 +90,7 @@ const handlePairConfirm = async (code: string) => {
       pairingRequest.value.isOpen = false;
       addToast(`Success! Device paired using code ${code}`, "success");
       await refreshDevices();
+      handleSelect(pairingRequest.value.device.id);
     } catch (e) {
       console.error("[Pairing] Accept failed:", e);
       addToast("Failed to pair device: " + e, "error");
@@ -138,11 +145,18 @@ onMounted(async () => {
 });
 
 const handleAcceptFile = async (transferId: string) => {
-  if (fileOffer.value) fileOffer.value.isOpen = false;
+  if (!fileOffer.value) return;
+  const senderId = fileOffer.value.senderId;
+  fileOffer.value.isOpen = false;
+  
   try {
     await invoke("accept_file_offer", { transferId });
+    if (senderId) {
+      handleSelect(senderId);
+    }
   } catch (e) {
     console.error("Failed to accept file:", e);
+    addToast("Failed to accept file transfer", "error");
   }
 };
 
@@ -215,48 +229,24 @@ const handleRejectFile = async (transferId: string) => {
       <div class="flex-1 p-8 flex flex-col items-center">
         
         <template v-if="currentView === 'devices'">
-          <!-- Top area for Drop zone -->
-          <div class="w-full max-w-[900px] flex flex-col gap-8 mt-4">
-            <FileTransfer
-              v-if="selectedDevice"
-              :device-id="selectedId"
-              :target-name="selectedDevice.name"
-              :target-ip="selectedDevice.ip"
-              :target-port="selectedDevice.port"
+          <!-- Device List -->
+          <div class="w-full max-w-[900px] mt-4">
+            <DeviceList
+              :devices="devices"
+              :selected-id="selectedId"
+              :is-discovering="isDiscovering"
+              @select="handleSelect"
+              @pair="handlePair"
+              @scan="triggerScan"
             />
-            <div v-else class="w-full h-[320px] bg-surface-container-low rounded-3xl flex flex-col items-center justify-center p-6 drop-zone-glow group relative overflow-hidden shrink-0 border border-white/5 shadow-2xl">
-              <div class="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-50"></div>
-              
-              <div class="relative w-24 h-24 mb-6 flex items-center justify-center">
-                 <!-- Radar rings -->
-                 <div v-if="isDiscovering" class="absolute inset-0 rounded-full border border-primary/40 animate-ping" style="animation-duration: 3s;"></div>
-                 <div v-if="isDiscovering" class="absolute inset-0 rounded-full border border-primary/20 animate-ping" style="animation-duration: 3s; animation-delay: 1s;"></div>
-                 <div class="w-16 h-16 rounded-full bg-surface-container-high/50 flex items-center justify-center border border-white/10 relative z-10 shadow-[0_0_30px_theme('colors.primary')]/20">
-                    <Laptop v-if="!isDiscovering" class="w-8 h-8 text-primary/60 group-hover:scale-110 transition-transform duration-500" stroke-width="1.5" />
-                    <Radar v-else class="w-8 h-8 text-primary/80 animate-spin" stroke-width="1.5" style="animation-duration: 4s;" />
-                 </div>
-              </div>
-
-              <h2 class="font-headline-sm text-headline-sm text-on-surface mb-2 tracking-tight">
-                {{ isDiscovering ? 'Scanning Network' : 'Ready to Share' }}
-              </h2>
-               <p class="text-body-md font-body-md text-on-surface-variant text-center max-w-sm">
-                 {{ isDiscovering ? 'Looking for nearby ProxiShare devices...' : 'Choose a nearby device below to start dropping files' }}
-               </p>
-            </div>
-
-            <!-- Device List -->
-            <div class="w-full">
-              <DeviceList
-                :devices="devices"
-                :selected-id="selectedId"
-                :is-discovering="isDiscovering"
-                @select="handleSelect"
-                @pair="handlePair"
-                @scan="triggerScan"
-              />
-            </div>
           </div>
+        </template>
+
+        <template v-else-if="currentView === 'device-details' && selectedDevice">
+          <DeviceDetailsView
+            :device="selectedDevice"
+            @back="currentView = 'devices'; selectedId = null"
+          />
         </template>
 
         <template v-else-if="currentView === 'transfers'">
