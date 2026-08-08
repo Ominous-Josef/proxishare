@@ -14,7 +14,7 @@ import ToastNotification from "./components/ToastNotification.vue";
 import { useDevices, type Device } from "./composables/useDevices";
 import { useToast } from "./composables/useToast";
 import { useSettings } from "./composables/useSettings";
-import { Share2, Settings, X, Laptop, Radar, Clock } from "lucide-vue-next";
+import { Share2, Settings, X, Laptop, Clock } from "lucide-vue-next";
 
 type View = "devices" | "transfers" | "settings" | "device-details";
 

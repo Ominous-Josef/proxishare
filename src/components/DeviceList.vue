@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { Device } from "../composables/useDevices";
-import { MonitorSmartphone, Laptop, Smartphone, Radar, Settings2, Trash2, Network, Activity, Upload, Download, PauseCircle, PlayCircle, XCircle, ChevronRight } from "lucide-vue-next";
+import { MonitorSmartphone, Laptop, Smartphone, Radar, Trash2, Network, Activity, Upload, Download, PauseCircle, PlayCircle, XCircle, ChevronRight } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
 import { useFileTransfer } from "../composables/useFileTransfer";
 import { getCurrentWebview } from "@tauri-apps/api/webview";

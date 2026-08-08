@@ -26,7 +26,7 @@ const props = defineProps<{
   deviceName?: string | null;
 }>();
 
-const { history, transfers, loadHistory, loadDeviceHistory, clearHistory, syncHistory } = useFileTransfer();
+const { history, transfers, loadHistory, loadDeviceHistory, clearHistory } = useFileTransfer();
 const { addToast } = useToast();
 const deviceHistory = ref<TransferRecord[]>([]);
 const isLoading = ref(false);
@@ -47,8 +47,6 @@ const loadData = async () => {
   isLoading.value = true;
   try {
     if (props.deviceId) {
-      // First sync with the remote device if it's reachable
-      await syncHistory(props.deviceId);
       deviceHistory.value = await loadDeviceHistory(props.deviceId);
     } else {
       await loadHistory();
@@ -89,19 +87,6 @@ const formatBytes = (bytes: number) => {
   const sizes = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
-};
-
-const formatSpeed = (bps: number) => {
-  if (bps === 0) return "-- MB/s";
-  return (bps / (1024 * 1024)).toFixed(1) + " MB/s";
-};
-
-const formatTime = (secs: number) => {
-  if (!isFinite(secs) || secs <= 0) return "--";
-  if (secs < 60) return Math.ceil(secs) + "s";
-  const m = Math.floor(secs / 60);
-  const s = Math.ceil(secs % 60);
-  return `${m}m ${s}s`;
 };
 
 const handleClearHistory = async () => {
