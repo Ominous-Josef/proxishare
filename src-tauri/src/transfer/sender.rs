@@ -218,8 +218,34 @@ impl FileSender {
                 registry.insert(transfer_id.clone(), crate::TransferStatus::Failed);
                 return Err(format!("Transfer error: {}", message).into());
             }
-            Ok(Ok(_)) => return Err("Unexpected message while waiting for file acceptance".into()),
-            Ok(Err(e)) => return Err(format!("Failed to receive file acceptance: {}", e).into()),
+            Ok(Ok(_)) => {
+                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                    transfer_id: transfer_id.clone(), device_id: self.remote_device_id.clone(),
+                    file_name: file_name.clone(),
+                    bytes_sent: 0,
+                    total_bytes: file_size,
+                    direction: "send".to_string(),
+                    status: "failed".to_string(),
+                    ..Default::default()
+                });
+                let mut registry = transfers.write().await;
+                registry.insert(transfer_id.clone(), crate::TransferStatus::Failed);
+                return Err("Unexpected message while waiting for file acceptance".into());
+            }
+            Ok(Err(e)) => {
+                let _ = self.app_handle.emit("transfer-progress", TransferProgress {
+                    transfer_id: transfer_id.clone(), device_id: self.remote_device_id.clone(),
+                    file_name: file_name.clone(),
+                    bytes_sent: 0,
+                    total_bytes: file_size,
+                    direction: "send".to_string(),
+                    status: "failed".to_string(),
+                    ..Default::default()
+                });
+                let mut registry = transfers.write().await;
+                registry.insert(transfer_id.clone(), crate::TransferStatus::Failed);
+                return Err(format!("Failed to receive file acceptance: {}", e).into());
+            }
             Err(_) => {
                 println!("[Transfer] Timeout waiting for receiver to accept");
                 let _ = self.app_handle.emit("transfer-progress", TransferProgress {

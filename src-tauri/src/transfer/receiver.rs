@@ -141,6 +141,8 @@ impl FileReceiver {
                                 },
                             )
                             .await;
+                            let _ = send_stream.finish();
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                             return Err("Transfer declined by receiver".into());
                         }
                         crate::TransferStatus::Cancelled => {
