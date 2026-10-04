@@ -11,7 +11,7 @@ import TransfersView from "./components/TransfersView.vue";
 import FileAcceptDialog from "./components/FileAcceptDialog.vue";
 import AppButton from "./components/AppButton.vue";
 import ToastNotification from "./components/ToastNotification.vue";
-import { useDevices, type Device } from "./composables/useDevices";
+import { useDevices } from "./composables/useDevices";
 import { useToast } from "./composables/useToast";
 import { useSettings } from "./composables/useSettings";
 import { Share2, Settings, X, Laptop, Clock } from "lucide-vue-next";
@@ -25,11 +25,8 @@ const selectedId = ref<string | null>(null);
 const currentView = ref<View>("devices");
 
 const pairingRequest = ref<{
-  device: Device;
+  device: { id: string; name: string };
   isOpen: boolean;
-  code?: string;
-  ip: string;
-  port: number;
 } | null>(null);
 const senderPairingCode = ref<string | null>(null);
 
@@ -80,26 +77,34 @@ const handlePair = async (id: string) => {
 };
 
 const handlePairConfirm = async (code: string) => {
-  if (pairingRequest.value && code.length === 6) {
-    try {
-      console.log(
-        "[Pairing] Accepting pairing for device:",
-        pairingRequest.value.device.id
-      );
-      await invoke("accept_pairing", {
-        deviceId: pairingRequest.value.device.id,
-        deviceName: pairingRequest.value.device.name,
-        ip: pairingRequest.value.ip,
-        port: pairingRequest.value.port,
-      });
-      pairingRequest.value.isOpen = false;
-      addToast(`Success! Device paired using code ${code}`, "success");
-      await refreshDevices();
-      handleSelect(pairingRequest.value.device.id);
-    } catch (e) {
-      console.error("[Pairing] Accept failed:", e);
-      addToast("Failed to pair device: " + e, "error");
+  const request = pairingRequest.value;
+  if (!request || code.length !== 6) return;
+  try {
+    console.log("[Pairing] Accepting pairing for device:", request.device.id);
+    await invoke("accept_pairing", { deviceId: request.device.id, code });
+    request.isOpen = false;
+    addToast(`Paired with ${request.device.name}`, "success");
+    await refreshDevices();
+    handleSelect(request.device.id);
+  } catch (e) {
+    console.error("[Pairing] Accept failed:", e);
+    const message = String(e);
+    addToast(message, "error");
+    // Wrong code: let the user retry. Anything else ends the request.
+    if (!message.startsWith("Wrong pairing code")) {
+      request.isOpen = false;
     }
+  }
+};
+
+const handlePairCancel = async () => {
+  const request = pairingRequest.value;
+  if (!request) return;
+  request.isOpen = false;
+  try {
+    await invoke("reject_pairing", { deviceId: request.device.id });
+  } catch (e) {
+    console.error("[Pairing] Reject failed:", e);
   }
 };
 
@@ -131,10 +136,19 @@ onMounted(async () => {
     pairingRequest.value = {
       device: event.payload.device,
       isOpen: true,
-      code: event.payload.code,
-      ip: event.payload.ip,
-      port: event.payload.port,
     };
+  });
+
+  // The other device answered a pairing request we sent.
+  await listen("pairing-result", async (event: any) => {
+    const { deviceName, accepted } = event.payload;
+    senderPairingCode.value = null;
+    if (accepted) {
+      addToast(`Paired with ${deviceName}`, "success");
+    } else {
+      addToast("Pairing was declined", "error");
+    }
+    await refreshDevices();
   });
 
   await listen("file-offer-received", (event: any) => {
@@ -157,16 +171,17 @@ onMounted(async () => {
 const handleAcceptFile = async (transferId: string, newName?: string) => {
   if (!fileOffer.value) return;
   const senderId = fileOffer.value.senderId;
-  fileOffer.value.isOpen = false;
-  
+
   try {
     await invoke("accept_file_offer", { transferId, newName });
+    fileOffer.value.isOpen = false;
     if (senderId) {
       handleSelect(senderId);
     }
   } catch (e) {
+    // Keep the dialog open so an invalid name can be corrected.
     console.error("Failed to accept file:", e);
-    addToast("Failed to accept file transfer", "error");
+    addToast(String(e), "error");
   }
 };
 
@@ -282,8 +297,7 @@ const handleRejectFile = async (transferId: string) => {
       v-if="pairingRequest"
       :is-open="pairingRequest.isOpen"
       :device-name="pairingRequest.device.name"
-      :expected-code="pairingRequest.code"
-      @close="pairingRequest.isOpen = false"
+      @close="handlePairCancel"
       @confirm="handlePairConfirm"
     />
 

@@ -28,6 +28,21 @@ pub struct TransferRecord {
     pub file_exists: Option<bool>,
 }
 
+impl TransferRecord {
+    pub fn to_synced(&self) -> crate::transfer::protocol::SyncedTransfer {
+        crate::transfer::protocol::SyncedTransfer {
+            id: self.id.clone(),
+            file_name: self.file_name.clone(),
+            total_size: self.total_size,
+            direction: self.direction.clone(),
+            status: self.status.clone(),
+            bytes_transferred: self.bytes_transferred,
+            created_at: self.created_at,
+            is_dir: self.is_dir,
+        }
+    }
+}
+
 pub struct TransferRecordArgs<'a> {
     pub id: &'a str,
     pub device_id: &'a str,
@@ -165,6 +180,21 @@ impl Database {
         Ok(())
     }
 
+    pub async fn update_file_location(
+        &self,
+        id: &str,
+        file_name: &str,
+        file_path: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE transfers SET file_name = ?, file_path = ? WHERE id = ?")
+            .bind(file_name)
+            .bind(file_path)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn update_folder_manifest(
         &self,
         id: &str,
@@ -235,6 +265,54 @@ impl Database {
         }
 
         Ok(records)
+    }
+
+    /// Stores a record shared by a paired device, seen from our side: the peer
+    /// becomes the device, the direction is flipped, and there is no local path.
+    /// Existing local records always win (INSERT OR IGNORE).
+    pub async fn import_peer_record(
+        &self,
+        peer_id: &str,
+        record: &crate::transfer::protocol::SyncedTransfer,
+    ) -> Result<(), sqlx::Error> {
+        let direction = match record.direction.as_str() {
+            "send" => "receive",
+            "receive" => "send",
+            _ => return Ok(()),
+        };
+        const KNOWN_STATUSES: &[&str] = &[
+            "pending",
+            "in_progress",
+            "paused",
+            "cancelled",
+            "completed",
+            "partial_success",
+            "failed",
+        ];
+        if !KNOWN_STATUSES.contains(&record.status.as_str()) {
+            return Ok(());
+        }
+
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO transfers (id, device_id, file_name, file_path, total_size, direction, status, bytes_transferred, file_hash, created_at, updated_at, is_dir, folder_manifest)
+            VALUES (?, ?, ?, '', ?, ?, ?, ?, '', ?, ?, ?, NULL)
+            "#,
+        )
+        .bind(&record.id)
+        .bind(peer_id)
+        .bind(&record.file_name)
+        .bind(record.total_size)
+        .bind(direction)
+        .bind(&record.status)
+        .bind(record.bytes_transferred)
+        .bind(record.created_at)
+        .bind(Utc::now().timestamp())
+        .bind(record.is_dir)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 
     pub async fn clear_history(&self) -> Result<(), sqlx::Error> {

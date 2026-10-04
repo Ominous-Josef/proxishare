@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 
 /// How long before a device is considered stale (5 minutes)
 /// mDNS doesn't continuously announce, so we need a longer timeout
-const DEVICE_TIMEOUT_SECS: i64 = 300;
+pub const DEVICE_TIMEOUT_SECS: i64 = 300;
 
 /// How often to re-query for devices (seconds)
 const REQUERY_INTERVAL_SECS: u64 = 30;
@@ -26,12 +26,26 @@ pub struct Device {
 
 use parking_lot::RwLock as SyncRwLock;
 
+const SERVICE_TYPE: &str = "_proxishare._tcp.local.";
+
+/// First 8 characters of a device id, used in mDNS instance names.
+/// Never panics, even on short or non-ASCII ids.
+pub fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
+pub fn is_valid_device_id(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok()
+}
+
 pub struct DiscoveryService {
     device_id: String,
     device_name: SyncRwLock<String>,
     port: u16,
     mdns: ServiceDaemon,
     discovered_devices: Arc<RwLock<HashMap<String, Device>>>,
+    /// Full mDNS name of our registered service, if we're currently discoverable.
+    registered: SyncRwLock<Option<String>>,
 }
 
 impl DiscoveryService {
@@ -48,13 +62,14 @@ impl DiscoveryService {
             port,
             mdns,
             discovered_devices: Arc::new(RwLock::new(HashMap::new())),
+            registered: SyncRwLock::new(None),
         })
     }
 
     pub fn start_broadcasting(&self) -> Result<(), crate::GenericError> {
-        let service_type = "_proxishare._tcp.local.";
+        let service_type = SERVICE_TYPE;
         let current_name = self.device_name.read().clone();
-        let instance_name = format!("{}_{}", current_name, &self.device_id[..8]);
+        let instance_name = format!("{}_{}", current_name, short_id(&self.device_id));
 
         // Get all local IPs to register with mDNS
         let local_ips = get_local_ips();
@@ -85,7 +100,9 @@ impl DiscoveryService {
             Some(properties),
         )?;
 
+        let fullname = service_info.get_fullname().to_string();
         self.mdns.register(service_info)?;
+        *self.registered.write() = Some(fullname);
         println!(
             "[mDNS] Service registered: {} on port {}",
             instance_name, self.port
@@ -93,23 +110,35 @@ impl DiscoveryService {
         Ok(())
     }
 
+    /// Unregisters our mDNS service so other devices stop seeing us.
+    pub fn stop_broadcasting(&self) {
+        if let Some(fullname) = self.registered.write().take() {
+            println!("[mDNS] Unregistering service: {}", fullname);
+            let _ = self.mdns.unregister(&fullname);
+        }
+    }
+
+    pub fn set_discoverable(&self, discoverable: bool) -> Result<(), crate::GenericError> {
+        let is_registered = self.registered.read().is_some();
+        if discoverable && !is_registered {
+            self.start_broadcasting()?;
+        } else if !discoverable && is_registered {
+            self.stop_broadcasting();
+        }
+        Ok(())
+    }
+
     pub fn update_name(&self, new_name: String) -> Result<(), crate::GenericError> {
-        let service_type = "_proxishare._tcp.local.";
-        let old_name = self.device_name.read().clone();
-        
-        if old_name == new_name {
+        if *self.device_name.read() == new_name {
             return Ok(());
         }
 
-        // Unregister the old service
-        let old_instance_name = format!("{}_{}", old_name, &self.device_id[..8]);
-        let old_fullname = format!("{}.{}", old_instance_name, service_type);
-        println!("[mDNS] Unregistering old name: {}", old_fullname);
-        let _ = self.mdns.unregister(&old_fullname);
-
-        // Update name and re-broadcast
+        let was_registered = self.registered.read().is_some();
+        self.stop_broadcasting();
         *self.device_name.write() = new_name;
-        self.start_broadcasting()?;
+        if was_registered {
+            self.start_broadcasting()?;
+        }
         Ok(())
     }
 
@@ -140,7 +169,7 @@ impl DiscoveryService {
     }
 
     pub fn start_discovery(&self) -> Result<(), crate::GenericError> {
-        let service_type = "_proxishare._tcp.local.";
+        let service_type = SERVICE_TYPE;
         let receiver = self.mdns.browse(service_type)?;
 
         println!(
@@ -158,10 +187,16 @@ impl DiscoveryService {
                     Ok(event) => {
                         match event {
                             ServiceEvent::ServiceResolved(info) => {
-                                let id = info
-                                    .get_property_val_str("id")
-                                    .unwrap_or("unknown")
-                                    .to_string();
+                                let id = match info.get_property_val_str("id") {
+                                    Some(id) if is_valid_device_id(id) => id.to_string(),
+                                    _ => {
+                                        println!(
+                                            "[mDNS] Ignoring service without a valid id: {}",
+                                            info.get_fullname()
+                                        );
+                                        continue;
+                                    }
+                                };
                                 if id == own_device_id {
                                     continue;
                                 }
@@ -220,7 +255,7 @@ impl DiscoveryService {
                                 // Try to find and remove by matching the instance name prefix
                                 let id_to_remove: Option<String> = devices
                                     .iter()
-                                    .find(|(_, d)| name.contains(&d.id[..8]))
+                                    .find(|(_, d)| name.contains(short_id(&d.id)))
                                     .map(|(id, _)| id.clone());
                                 if let Some(id) = id_to_remove {
                                     devices.remove(&id);
@@ -239,78 +274,13 @@ impl DiscoveryService {
             }
         });
 
-        // Start a background task to clean up stale devices and re-query
-        let cleanup_devices = Arc::clone(&self.discovered_devices);
+        // Periodically re-query so devices that stay up keep refreshing `last_seen`.
+        // Stale-device cleanup lives in lib.rs, where the QUIC transport is available.
         let mdns_for_requery = self.mdns.clone();
         tauri::async_runtime::spawn(async move {
-            let mut requery_counter = 0u64;
             loop {
-                tokio::time::sleep(Duration::from_secs(10)).await;
-
-                // Clean up stale devices
-                let now = Utc::now().timestamp();
-
-                // 1. Identify potentially stale devices
-                let devices_lock = cleanup_devices.write().await;
-                let mut potentially_stale = Vec::new();
-                for (id, device) in devices_lock.iter() {
-                    if now - device.last_seen >= DEVICE_TIMEOUT_SECS {
-                        potentially_stale.push((id.clone(), device.ip.clone(), device.port));
-                    }
-                }
-                drop(devices_lock);
-
-                // 2. Ping them asynchronously
-                let mut confirmed_stale = Vec::new();
-                for (id, ip, port) in potentially_stale {
-                    use std::net::SocketAddr;
-                    let addr: Result<SocketAddr, _> = format!("{}:{}", ip, port).parse();
-                    let is_alive = match addr {
-                        Ok(a) => {
-                            matches!(
-                                tokio::time::timeout(
-                                    Duration::from_millis(500),
-                                    tokio::net::TcpStream::connect(a)
-                                )
-                                .await,
-                                Ok(Ok(_))
-                            )
-                        }
-                        Err(_) => false,
-                    };
-
-                    if is_alive {
-                        // It's alive! Update last_seen
-                        println!(
-                            "[mDNS] Device {} is still reachable via TCP, updating last_seen",
-                            id
-                        );
-                        let mut devices_lock = cleanup_devices.write().await;
-                        if let Some(device) = devices_lock.get_mut(&id) {
-                            device.last_seen = Utc::now().timestamp();
-                        }
-                    } else {
-                        confirmed_stale.push(id);
-                    }
-                }
-
-                // 3. Remove confirmed stale devices
-                if !confirmed_stale.is_empty() {
-                    let mut devices_lock = cleanup_devices.write().await;
-                    for id in confirmed_stale {
-                        println!("[mDNS] Removing stale device: {}", id);
-                        devices_lock.remove(&id);
-                    }
-                }
-
-                // Re-query every REQUERY_INTERVAL_SECS to refresh device list
-                requery_counter += 10;
-                if requery_counter >= REQUERY_INTERVAL_SECS {
-                    requery_counter = 0;
-                    println!("[mDNS] Re-querying for devices...");
-                    // Trigger a new query by browsing again (mdns-sd handles deduplication)
-                    let _ = mdns_for_requery.browse("_proxishare._tcp.local.");
-                }
+                tokio::time::sleep(Duration::from_secs(REQUERY_INTERVAL_SECS)).await;
+                let _ = mdns_for_requery.browse(SERVICE_TYPE);
             }
         });
 
@@ -320,42 +290,7 @@ impl DiscoveryService {
     /// Trigger an immediate mDNS scan
     pub fn trigger_scan(&self) {
         println!("[mDNS] Manual scan triggered...");
-        let _ = self.mdns.browse("_proxishare._tcp.local.");
-    }
-
-    /// Test connectivity to a device by attempting a TCP connection
-    pub async fn test_connectivity(&self, ip: &str, port: u16) -> bool {
-        use std::net::SocketAddr;
-        let addr: SocketAddr = match format!("{}:{}", ip, port).parse() {
-            Ok(a) => a,
-            Err(_) => return false,
-        };
-
-        matches!(
-            tokio::time::timeout(
-                Duration::from_millis(500),
-                tokio::net::TcpStream::connect(addr),
-            )
-            .await,
-            Ok(Ok(_))
-        )
-    }
-
-    /// Find a reachable IP for a device from its list of addresses
-    pub async fn find_reachable_ip(&self, device: &Device) -> Option<String> {
-        // First try the primary IP
-        if self.test_connectivity(&device.ip, device.port).await {
-            return Some(device.ip.clone());
-        }
-
-        // Try other IPs
-        for ip in &device.all_ips {
-            if ip != &device.ip && self.test_connectivity(ip, device.port).await {
-                return Some(ip.clone());
-            }
-        }
-
-        None
+        let _ = self.mdns.browse(SERVICE_TYPE);
     }
 
     pub async fn get_devices(&self) -> Vec<Device> {
@@ -369,6 +304,45 @@ impl DiscoveryService {
     
     pub fn get_my_name(&self) -> String {
         self.device_name.read().clone()
+    }
+
+    /// Devices not seen for at least `timeout_secs`, as (id, ip, port).
+    pub async fn stale_devices(&self, timeout_secs: i64) -> Vec<(String, String, u16)> {
+        let now = Utc::now().timestamp();
+        self.discovered_devices
+            .read()
+            .await
+            .values()
+            .filter(|d| now - d.last_seen >= timeout_secs)
+            .map(|d| (d.id.clone(), d.ip.clone(), d.port))
+            .collect()
+    }
+
+    pub async fn touch(&self, id: &str) {
+        if let Some(device) = self.discovered_devices.write().await.get_mut(id) {
+            device.last_seen = Utc::now().timestamp();
+        }
+    }
+
+    pub async fn remove(&self, id: &str) {
+        self.discovered_devices.write().await.remove(id);
+    }
+
+    /// Adds a device that contacted us directly, but never overwrites one we
+    /// already know: otherwise anyone could redirect a known device id to their IP.
+    pub async fn add_if_unknown(&self, id: String, name: String, ip: String, port: u16) {
+        if !is_valid_device_id(&id) || id == self.device_id {
+            return;
+        }
+        let mut devices = self.discovered_devices.write().await;
+        devices.entry(id.clone()).or_insert(Device {
+            id,
+            name,
+            ip: ip.clone(),
+            all_ips: vec![ip],
+            port,
+            last_seen: Utc::now().timestamp(),
+        });
     }
 
     pub async fn add_manual_device(&self, id: String, name: String, ip: String, port: u16) {
@@ -469,4 +443,25 @@ pub struct NetworkDiagnostics {
     pub mdns_port: u16,
     pub app_port: u16,
     pub subnet_info: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_id_never_panics() {
+        assert_eq!(short_id("0123456789"), "01234567");
+        assert_eq!(short_id("unknown"), "unknown");
+        assert_eq!(short_id(""), "");
+        // A multi-byte character straddling byte 8 must not panic.
+        assert_eq!(short_id("abcdefgé"), "abcdefgé");
+    }
+
+    #[test]
+    fn device_ids_must_be_uuids() {
+        assert!(is_valid_device_id("6f1c0f9e-2b7c-4a7e-9d43-1b1f0d3c9a10"));
+        assert!(!is_valid_device_id("unknown"));
+        assert!(!is_valid_device_id(""));
+    }
 }

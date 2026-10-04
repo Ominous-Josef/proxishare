@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { ChevronRight, ChevronDown, File, Folder, CheckCircle2, Circle } from 'lucide-vue-next';
 import FileTreeNode from './FileTreeNode.vue';
 
 const props = defineProps<{

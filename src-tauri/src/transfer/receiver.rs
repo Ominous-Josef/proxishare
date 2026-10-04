@@ -1,13 +1,48 @@
-use crate::transfer::protocol::MessageType;
+use crate::transfer::protocol::{
+    read_message, write_message, FileMetadata, MessageType, SyncedTransfer, TransferOutcome,
+    MAX_CHUNK_SIZE,
+};
 use crate::transfer::sender::TransferProgress;
-use quinn::Connection;
-use std::path::PathBuf;
+use crate::transfer::session::{resolve_destination, FileVerdict, Phase, ReceiveSession};
+use crate::TransferStatus;
+use quinn::{Connection, RecvStream, SendStream};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tauri::{Emitter, Manager};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 
-use tauri::Emitter;
+/// How long to wait for the user to accept or decline (the sender gives up at 300s).
+const DECISION_TIMEOUT: Duration = Duration::from_secs(310);
+/// Minimum interval between progress events while data is flowing.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+/// Upper bound on history records accepted from a peer in one sync.
+const MAX_SYNC_RECORDS: usize = 100;
+
+/// What the background reader hands to the transfer loop. Reading happens in its
+/// own task so the loop can `select!` on it without losing half-read frames.
+enum Incoming {
+    Message(MessageType),
+    Chunk { transfer_id: String, data: Vec<u8> },
+}
+
+/// How a transfer ended without a protocol or IO error.
+enum End {
+    Completed(TransferOutcome),
+    Declined,
+    Cancelled,
+}
+
+struct RxState {
+    session: ReceiveSession,
+    file: Option<File>,
+    last_status: TransferStatus,
+    /// Path of the current file as the sender named it, for the UI's folder tree.
+    current_display: Option<String>,
+    last_emit: Instant,
+}
 
 pub struct FileReceiver {
     save_directory: PathBuf,
@@ -17,9 +52,12 @@ pub struct FileReceiver {
     transfers: crate::TransferRegistry,
     security: Arc<RwLock<crate::crypto::security::SecurityService>>,
     renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
+    settings: Arc<RwLock<crate::settings::SettingsManager>>,
+    pairing: Arc<RwLock<crate::pairing::PairingState>>,
 }
 
 impl FileReceiver {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         save_directory: PathBuf,
         connection: Connection,
@@ -28,6 +66,8 @@ impl FileReceiver {
         transfers: crate::TransferRegistry,
         security: Arc<RwLock<crate::crypto::security::SecurityService>>,
         renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
+        settings: Arc<RwLock<crate::settings::SettingsManager>>,
+        pairing: Arc<RwLock<crate::pairing::PairingState>>,
     ) -> Self {
         Self {
             save_directory,
@@ -37,816 +77,735 @@ impl FileReceiver {
             transfers,
             security,
             renames,
+            settings,
+            pairing,
         }
     }
 
     fn check_disk_space(&self, required_bytes: u64) -> Result<(), crate::GenericError> {
-        let parent = self.save_directory.parent().unwrap_or(&self.save_directory);
-        let space = fs2::available_space(parent)?;
+        let space = fs2::available_space(&self.save_directory)?;
         if space < required_bytes {
             return Err("Insufficient disk space".into());
         }
         Ok(())
     }
 
+    fn remote_ip(&self) -> String {
+        self.connection.remote_address().ip().to_string()
+    }
+
+    /// Each connection carries exactly one purpose, decided by its first message.
+    /// Control messages (ping, pairing, history) are never accepted mid-transfer.
     pub async fn handle_transfer(&self) -> Result<(), crate::GenericError> {
-        // Accept the single bidirectional stream from the sender
-        let (mut send_stream, mut recv_stream) = self.connection.accept_bi().await?;
+        let (mut send_stream, recv_stream) = self.connection.accept_bi().await?;
+        let mut recv_stream = recv_stream;
 
-        let mut file: Option<File> = None;
-        let mut bytes_received: u64 = 0;
-        let mut current_transfer_id = String::new();
-        let mut current_device_id = String::new();
-        let mut current_file_name = String::new();
-        let mut current_file_size: u64 = 0;
-        let mut last_status = crate::TransferStatus::InProgress;
-        let mut is_dir = false;
-        
-        let mut current_sub_file_path: Option<String> = None;
-        let mut current_sub_file_size: Option<u64> = None;
-        let mut current_sub_file_received: Option<u64> = None;
-
-        let mut status_ticker = tokio::time::interval(std::time::Duration::from_millis(500));
-
-        loop {
-            // 1. Check local status changes
-            if !current_transfer_id.is_empty() {
-                let status = {
-                    let registry = self.transfers.read().await;
-                    registry
-                        .get(&current_transfer_id)
-                        .cloned()
-                        .unwrap_or(last_status)
-                };
-
-                if status != last_status {
-                    // Sync status to database
-                    {
-                        let db_lock = self.database.read().await;
-                        if let Some(db) = &*db_lock {
-                            let status_str = match status {
-                                crate::TransferStatus::Pending => "pending",
-                                crate::TransferStatus::InProgress => "in_progress",
-                                crate::TransferStatus::Paused => "paused",
-                                crate::TransferStatus::Cancelled => "cancelled",
-                                crate::TransferStatus::Completed => "completed",
-                                crate::TransferStatus::PartialSuccess => "partial_success",
-                                crate::TransferStatus::Failed => "failed",
-                            };
-                            let _ = db
-                                .update_transfer_status(
-                                    &current_transfer_id,
-                                    status_str,
-                                    bytes_received as i64,
-                                )
-                                .await;
-                        }
-                    }
-
-                    match status {
-                        crate::TransferStatus::InProgress
-                            if last_status == crate::TransferStatus::Pending =>
-                        {
-                            println!("[Receiver] User accepted file. Sending FileAccept...");
-                            let _ = Self::write_message(
-                                &mut send_stream,
-                                &MessageType::FileAccept {
-                                    transfer_id: current_transfer_id.clone(),
-                                },
-                            )
-                            .await;
-
-                            if let Some(new_name) = self.renames.read().await.get(&current_transfer_id) {
-                                current_file_name = new_name.clone();
-                            }
-                            self.renames.write().await.remove(&current_transfer_id);
-
-                            if !is_dir {
-                                let path = self.save_directory.join(&current_file_name);
-                                if let Some(parent) = path.parent() {
-                                    let _ = tokio::fs::create_dir_all(parent).await;
-                                }
-                                let std_file = std::fs::OpenOptions::new()
-                                    .write(true)
-                                    .create(true)
-                                    .truncate(true)
-                                    .open(&path)
-                                    .unwrap(); // Or handle error
-
-                                use fs2::FileExt;
-                                let _ = std_file.allocate(current_file_size);
-
-                                file = Some(File::from_std(std_file));
-                            } else {
-                                let path = self.save_directory.join(&current_file_name);
-                                let _ = tokio::fs::create_dir_all(&path).await;
-                            }
-                        }
-                        crate::TransferStatus::Cancelled
-                            if last_status == crate::TransferStatus::Pending =>
-                        {
-                            println!("[Receiver] User declined file. Sending FileReject...");
-                            let _ = Self::write_message(
-                                &mut send_stream,
-                                &MessageType::FileReject {
-                                    transfer_id: current_transfer_id.clone(),
-                                    reason: "User declined".to_string(),
-                                },
-                            )
-                            .await;
-                            let _ = send_stream.finish();
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            return Err("Transfer declined by receiver".into());
-                        }
-                        crate::TransferStatus::Cancelled => {
-                            println!("[Receiver] Sending TransferCancel to sender...");
-                            let _ = Self::write_message(
-                                &mut send_stream,
-                                &MessageType::TransferCancel {
-                                    transfer_id: current_transfer_id.clone(),
-                                },
-                            )
-                            .await;
-                            // Emit final cancelled status
-                            let _ = self.app_handle.emit(
-                                "transfer-progress",
-                                TransferProgress {
-                                    transfer_id: current_transfer_id.clone(),
-                                    device_id: current_device_id.clone(),
-                                    file_name: current_file_name.clone(),
-                                    bytes_sent: bytes_received,
-                                    total_bytes: current_file_size,
-                                    direction: "receive".to_string(),
-                                    status: "cancelled".to_string(),
-                                    ..Default::default()
-                                },
-                            );
-                            // Give sender time to read the message before closing socket
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            return Err("Transfer cancelled by receiver".into());
-                        }
-                        crate::TransferStatus::Paused => {
-                            println!("[Receiver] Sending TransferPause to sender...");
-                            let _ = Self::write_message(
-                                &mut send_stream,
-                                &MessageType::TransferPause {
-                                    transfer_id: current_transfer_id.clone(),
-                                },
-                            )
-                            .await;
-                        }
-                        crate::TransferStatus::InProgress
-                            if last_status == crate::TransferStatus::Paused =>
-                        {
-                            println!("[Receiver] Sending TransferResume to sender...");
-                            let _ = Self::write_message(
-                                &mut send_stream,
-                                &MessageType::TransferResume {
-                                    transfer_id: current_transfer_id.clone(),
-                                },
-                            )
-                            .await;
-                        }
-                        _ => {}
-                    }
-
-                    // Emit progress update when local status changes
-                    let _ = self.app_handle.emit(
-                        "transfer-progress",
-                        TransferProgress {
-                            transfer_id: current_transfer_id.clone(),
-                            device_id: current_device_id.clone(),
-                            file_name: current_file_name.clone(),
-                            bytes_sent: bytes_received,
-                            total_bytes: current_file_size,
-                            direction: "receive".to_string(),
-                            status: match status {
-                                crate::TransferStatus::Paused => "paused",
-                                crate::TransferStatus::Cancelled => "cancelled",
-                                _ => "in_progress",
-                            }
-                            .to_string(),
-                            current_file_path: current_sub_file_path.clone(),
-                            current_file_sent: current_sub_file_received,
-                            current_file_total: current_sub_file_size,
-                            ..Default::default()
-                        },
-                    );
-
-                    last_status = status;
-                }
+        match read_message(&mut recv_stream).await? {
+            MessageType::Hello {
+                device_id,
+                device_name,
+            } => self.handle_hello(&mut send_stream, device_id, device_name).await,
+            MessageType::PairRequest {
+                device_id,
+                device_name,
+                pairing_code,
+            } => {
+                self.handle_pair_request(device_id, device_name, pairing_code)
+                    .await
             }
-
-            // 2. Listen for network messages
-            let msg_result = if last_status == crate::TransferStatus::Pending
-                || last_status == crate::TransferStatus::Paused
-                || current_transfer_id.is_empty()
-            {
-                tokio::select! {
-                    res = Self::read_message(&mut recv_stream) => Some(res),
-                    _ = status_ticker.tick() => None,
-                }
-            } else {
-                Some(Self::read_message(&mut recv_stream).await)
-            };
-
-            if let Some(msg_result) = msg_result {
-                let msg = match msg_result {
-                    Ok(m) => m,
-                    Err(e) => {
-                        println!("[Receiver] Error reading from stream: {:?}", e);
-                        if !current_transfer_id.is_empty() {
-                            let mut transfers = self.transfers.write().await;
-                            transfers
-                                .insert(current_transfer_id.clone(), crate::TransferStatus::Failed);
-
-                            let db_lock = self.database.read().await;
-                            if let Some(db) = &*db_lock {
-                                let _ = db
-                                    .update_transfer_status(
-                                        &current_transfer_id,
-                                        "failed",
-                                        bytes_received as i64,
-                                    )
-                                    .await;
-                            }
-
-                            let _ = self.app_handle.emit(
-                                "transfer-progress",
-                                TransferProgress {
-                                    transfer_id: current_transfer_id.clone(),
-                                    device_id: current_device_id.clone(),
-                                    file_name: current_file_name.clone(),
-                                    bytes_sent: bytes_received,
-                                    total_bytes: current_file_size,
-                                    direction: "receive".to_string(),
-                                    status: "failed".to_string(),
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                        return Err(e);
-                    }
-                };
-
-                match msg {
-                    MessageType::Hello {
-                        device_id,
-                        device_name,
-                    } => {
-                        use tauri::Manager;
-                        let state = self.app_handle.state::<crate::AppState>();
-
-                        // 1. Get our own details
-                        let my_id = {
-                            let security = self.security.read().await;
-                            security.get_device_id().to_string()
-                        };
-                        let my_name = {
-                            let settings = state.settings.read().await;
-                            settings.get_settings().device_name.clone()
-                        };
-
-                        // 2. Respond with HelloAck
-                        let _ = Self::write_message(
-                            &mut send_stream,
-                            &MessageType::HelloAck {
-                                device_id: my_id,
-                                device_name: my_name,
-                            },
-                        )
-                        .await;
-
-                        // 3. Inject sender into discovery list so we can see them too!
-                        if let Some(discovery) = state.discovery.read().await.as_ref() {
-                            let ip = self.connection.remote_address().ip().to_string();
-                            discovery
-                                .add_manual_device(
-                                    device_id.clone(),
-                                    device_name.clone(),
-                                    ip,
-                                    51731,
-                                )
-                                .await;
-                        }
-
-                        println!(
-                            "[Receiver] Handled Hello ping from {}: {}",
-                            device_name, device_id
-                        );
-
-                        // Finish stream and wait to ensure QUIC delivers the ACK
-                        let _ = send_stream.finish();
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-                        return Err("Ping connection closed".into());
-                    }
-                    MessageType::FileOffer {
-                        transfer_id,
-                        metadata,
-                        sender_id,
-                        sender_name,
-                    } => {
-                        // 1. Verify Unauthenticated connection
-                        {
-                            let security = self.security.read().await;
-                            if !security.is_trusted(&sender_id) {
-                                println!(
-                                    "[Receiver] Rejecting connection from untrusted sender: {}",
-                                    sender_id
-                                );
-                                let _ = Self::write_message(
-                                    &mut send_stream,
-                                    &MessageType::TransferError {
-                                        transfer_id: transfer_id.clone(),
-                                        message: "Device not trusted".to_string(),
-                                    },
-                                )
-                                .await;
-                                return Err("Untrusted device".into());
-                            }
-                        }
-
-                        self.check_disk_space(metadata.size)?;
-
-                        // 2. Fix Path Traversal
-                        let file_name = std::path::Path::new(&metadata.name)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unnamed_file");
-
-                        let path = self.save_directory.join(file_name);
-
-                        // Abort if path escapes directory (double check)
-                        if !path.starts_with(&self.save_directory) {
-                            return Err("Path traversal detected".into());
-                        }
-
-                        current_transfer_id = transfer_id.clone();
-                        current_device_id = sender_id.clone();
-                        current_file_name = file_name.to_string();
-                        current_file_size = metadata.size;
-                        is_dir = metadata.is_dir.unwrap_or(false);
-                        let file_exists = path.exists();
-
-                        // Update registry as Pending
-                        {
-                            let mut transfers = self.transfers.write().await;
-                            transfers.insert(
-                                current_transfer_id.clone(),
-                                crate::TransferStatus::Pending,
-                            );
-                        }
-                        last_status = crate::TransferStatus::Pending;
-
-                        // Record the transfer start in database
-                        {
-                            let db_lock = self.database.read().await;
-                            if let Some(db) = &*db_lock {
-                                if let Err(e) = db
-                                    .record_transfer(crate::db::TransferRecordArgs {
-                                        id: &current_transfer_id,
-                                        device_id: &sender_id,
-                                        file_name: &current_file_name,
-                                        file_path: &path.to_string_lossy(),
-                                        total_size: current_file_size as i64,
-                                        direction: "receive",
-                                        file_hash: &metadata.hash,
-                                        is_dir,
-                                        folder_manifest: None,
-                                    })
-                                    .await
-                                {
-                                    println!("[Database] Failed to record transfer: {:?}", e);
-                                }
-                            }
-                        }
-
-                        // Emit event to UI asking for acceptance
-                        let _ = self.app_handle.emit(
-                            "file-offer-received",
-                            serde_json::json!({
-                                "transferId": current_transfer_id,
-                                "fileName": current_file_name,
-                                "fileSize": current_file_size,
-                                "senderId": sender_id,
-                                "senderName": sender_name,
-                                "isDir": is_dir,
-                                "fileCount": metadata.file_count,
-                                "subfolderCount": metadata.subfolder_count,
-                                "topExtensions": metadata.top_extensions,
-                                "fileExists": file_exists,
-                            }),
-                        );
-                    }
-                    MessageType::DirectoryManifest { transfer_id, files } => {
-                        if transfer_id == current_transfer_id {
-                            let _ = self.app_handle.emit(
-                                "folder-manifest",
-                                serde_json::json!({
-                                    "transfer_id": transfer_id,
-                                    "files": files
-                                }),
-                            );
-                            
-                            // Save manifest to database for history view
-                            if let Ok(manifest_json) = serde_json::to_string(&files) {
-                                let db_lock = self.database.read().await;
-                                if let Some(db) = &*db_lock {
-                                    let _ = db.update_folder_manifest(&transfer_id, &manifest_json).await;
-                                }
-                            }
-
-                            let base_path = self.save_directory.join(&current_file_name);
-                            for file_entry in files {
-                                // Protect against path traversal again
-                                let rel_path = std::path::Path::new(&file_entry.relative_path);
-                                let mut safe = true;
-                                for comp in rel_path.components() {
-                                    if matches!(
-                                        comp,
-                                        std::path::Component::ParentDir
-                                            | std::path::Component::RootDir
-                                    ) {
-                                        safe = false;
-                                    }
-                                }
-                                if safe {
-                                    let full_path = base_path.join(rel_path);
-                                    if let Some(parent) = full_path.parent() {
-                                        let _ = tokio::fs::create_dir_all(parent).await;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    MessageType::FileStart {
-                        transfer_id,
-                        relative_path,
-                        size,
-                    } => {
-                        if transfer_id == current_transfer_id {
-                            current_sub_file_path = Some(relative_path.clone());
-                            current_sub_file_size = Some(size);
-                            current_sub_file_received = Some(0);
-                            
-                            // Close previous file if any
-                            if let Some(mut f) = file.take() {
-                                let _ = f.flush().await;
-                            }
-
-                            let rel_path = std::path::Path::new(&relative_path);
-                            // Check traversal
-                            let mut safe = true;
-                            for comp in rel_path.components() {
-                                if matches!(
-                                    comp,
-                                    std::path::Component::ParentDir | std::path::Component::RootDir
-                                ) {
-                                    safe = false;
-                                }
-                            }
-                            if safe {
-                                let base_path = if is_dir {
-                                    self.save_directory.join(&current_file_name)
-                                } else {
-                                    self.save_directory.clone()
-                                };
-                                let full_path = base_path.join(rel_path);
-
-                                if let Some(parent) = full_path.parent() {
-                                    let _ = tokio::fs::create_dir_all(parent).await;
-                                }
-
-                                let std_file = std::fs::OpenOptions::new()
-                                    .write(true)
-                                    .create(true)
-                                    .truncate(true)
-                                    .open(&full_path)?;
-                                use fs2::FileExt;
-                                let _ = std_file.allocate(size);
-                                file = Some(File::from_std(std_file));
-                            }
-                        }
-                    }
-                    MessageType::ChunkData {
-                        transfer_id: _,
-                        chunk_index: _,
-                        chunk_size,
-                        chunk_hash,
-                    } => {
-                        let mut data = vec![0u8; chunk_size as usize];
-                        recv_stream.read_exact(&mut data).await?;
-
-                        if let Some(ref mut f) = file {
-                            // Verify chunk
-                            let actual_hash = blake3::hash(&data).to_hex().to_string();
-                            if actual_hash != chunk_hash {
-                                return Err("Chunk hash mismatch".into());
-                            }
-
-                            f.write_all(&data).await?;
-                            bytes_received += data.len() as u64;
-
-                            // Emit progress event
-                            if let Some(received) = &mut current_sub_file_received {
-                                *received += data.len() as u64;
-                            }
-                            let _ = self.app_handle.emit(
-                                "transfer-progress",
-                                TransferProgress {
-                                    transfer_id: current_transfer_id.clone(),
-                                    device_id: current_device_id.clone(),
-                                    file_name: current_file_name.clone(),
-                                    bytes_sent: bytes_received,
-                                    total_bytes: current_file_size,
-                                    direction: "receive".to_string(),
-                                    status: match last_status {
-                                        crate::TransferStatus::Paused => "paused",
-                                        crate::TransferStatus::Cancelled => "cancelled",
-                                        _ => "in_progress",
-                                    }
-                                    .to_string(),
-                                    current_file_path: current_sub_file_path.clone(),
-                                    current_file_sent: current_sub_file_received,
-                                    current_file_total: current_sub_file_size,
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                    }
-                    MessageType::TransferPause { transfer_id: _ } => {
-                        println!("[Receiver] Transfer paused by sender");
-                        {
-                            let mut transfers = self.transfers.write().await;
-                            transfers
-                                .insert(current_transfer_id.clone(), crate::TransferStatus::Paused);
-                        }
-                        last_status = crate::TransferStatus::Paused;
-                        // Emit progress event
-                        let _ = self.app_handle.emit(
-                            "transfer-progress",
-                            TransferProgress {
-                                transfer_id: current_transfer_id.clone(),
-                                device_id: current_device_id.clone(),
-                                file_name: current_file_name.clone(),
-                                bytes_sent: bytes_received,
-                                total_bytes: current_file_size,
-                                direction: "receive".to_string(),
-                                status: "paused".to_string(),
-                                current_file_path: current_sub_file_path.clone(),
-                                current_file_sent: current_sub_file_received,
-                                current_file_total: current_sub_file_size,
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    MessageType::TransferResume { transfer_id: _ } => {
-                        println!("[Receiver] Transfer resumed by sender");
-                        {
-                            let mut transfers = self.transfers.write().await;
-                            transfers.insert(
-                                current_transfer_id.clone(),
-                                crate::TransferStatus::InProgress,
-                            );
-                        }
-                        last_status = crate::TransferStatus::InProgress;
-                        // Emit progress event
-                        let _ = self.app_handle.emit(
-                            "transfer-progress",
-                            TransferProgress {
-                                transfer_id: current_transfer_id.clone(),
-                                device_id: current_device_id.clone(),
-                                file_name: current_file_name.clone(),
-                                bytes_sent: bytes_received,
-                                total_bytes: current_file_size,
-                                direction: "receive".to_string(),
-                                status: match last_status {
-                                    crate::TransferStatus::Paused => "paused",
-                                    crate::TransferStatus::Cancelled => "cancelled",
-                                    _ => "in_progress",
-                                }
-                                .to_string(),
-                                current_file_path: current_sub_file_path.clone(),
-                                current_file_sent: current_sub_file_received,
-                                current_file_total: current_sub_file_size,
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    MessageType::TransferCancel { transfer_id: _ } => {
-                        println!("[Receiver] Transfer cancelled by sender");
-                        {
-                            let mut transfers = self.transfers.write().await;
-                            transfers.insert(
-                                current_transfer_id.clone(),
-                                crate::TransferStatus::Cancelled,
-                            );
-                        }
-                        // Update database
-                        {
-                            let db_lock = self.database.read().await;
-                            if let Some(db) = &*db_lock {
-                                let _ = db
-                                    .update_transfer_status(
-                                        &current_transfer_id,
-                                        "cancelled",
-                                        bytes_received as i64,
-                                    )
-                                    .await;
-                            }
-                        }
-                        // Emit progress event
-                        let _ = self.app_handle.emit(
-                            "transfer-progress",
-                            TransferProgress {
-                                transfer_id: current_transfer_id.clone(),
-                                device_id: current_device_id.clone(),
-                                file_name: current_file_name.clone(),
-                                bytes_sent: bytes_received,
-                                total_bytes: current_file_size,
-                                direction: "receive".to_string(),
-                                status: "cancelled".to_string(),
-
-                                ..Default::default()
-                            },
-                        );
-                        let _ = self.app_handle.emit("history-updated", ());
-                        return Err("Transfer cancelled by sender".into());
-                    }
-                    MessageType::TransferComplete { transfer_id } => {
-                        println!("[Transfer] Received TransferComplete, flushing file...");
-                        if let Some(mut f) = file.take() {
-                            f.flush().await?;
-                        }
-                        // Update status in database
-                        {
-                            let db_lock = self.database.read().await;
-                            if let Some(db) = &*db_lock {
-                                if let Err(e) = db
-                                    .update_transfer_status(
-                                        &transfer_id,
-                                        "completed",
-                                        current_file_size as i64,
-                                    )
-                                    .await
-                                {
-                                    println!(
-                                        "[Database] Failed to update transfer status: {:?}",
-                                        e
-                                    );
-                                }
-
-                                // Automatic History Sync after completion
-                                println!("[Transfer] Preparing automatic history sync...");
-                                if let Ok(records) = db.get_transfer_history(50, 0).await {
-                                    println!(
-                                        "[Transfer] Sending {} history records to sender...",
-                                        records.len()
-                                    );
-                                    let _ = Self::write_message(
-                                        &mut send_stream,
-                                        &MessageType::HistorySync { records },
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
-
-                        // Notify frontend that history changed
-                        let _ = self.app_handle.emit("history-updated", ());
-                        let _ = self.app_handle.emit(
-                            "transfer-progress",
-                            TransferProgress {
-                                transfer_id: transfer_id.clone(),
-                                device_id: current_device_id.clone(),
-                                file_name: current_file_name.clone(),
-                                bytes_sent: current_file_size,
-                                total_bytes: current_file_size,
-                                direction: "receive".to_string(),
-                                status: "completed".to_string(),
-
-                                ..Default::default()
-                            },
-                        );
-
-                        println!("[Transfer] Sending TransferCompleteAck...");
-                        // Send acknowledgment on the same stream
-                        Self::write_message(
-                            &mut send_stream,
-                            &MessageType::TransferCompleteAck { transfer_id },
-                        )
-                        .await?;
-
-                        println!("[Transfer] Finishing send stream...");
-                        send_stream.finish()?;
-
-                        // Give QUIC time to flush the ACK bytes over the wire
-                        // before we return and the connection gets dropped
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-                        // Explicitly close the connection gracefully
-                        self.connection
-                            .close(quinn::VarInt::from_u32(0), b"transfer complete");
-
-                        println!("[Transfer] Transfer complete, breaking loop");
-                        break;
-                    }
-                    MessageType::HistorySync { records } => {
-                        println!(
-                            "[Transfer] Received HistorySync with {} records",
-                            records.len()
-                        );
-                        let db_lock = self.database.read().await;
-                        if let Some(db) = &*db_lock {
-                            for record in records {
-                                let _ = db
-                                    .record_transfer(crate::db::TransferRecordArgs {
-                                        id: &record.id,
-                                        device_id: &record.device_id,
-                                        file_name: &record.file_name,
-                                        file_path: &record.file_path,
-                                        total_size: record.total_size,
-                                        direction: &record.direction,
-                                        file_hash: &record.file_hash,
-                                        is_dir: record.is_dir,
-                                        folder_manifest: record.folder_manifest.as_deref(),
-                                    })
-                                    .await;
-                                let _ = db
-                                    .update_transfer_status(
-                                        &record.id,
-                                        &record.status,
-                                        record.bytes_transferred,
-                                    )
-                                    .await;
-                            }
-                        }
-                        // Notify frontend that history changed
-                        let _ = self.app_handle.emit("history-updated", ());
-                    }
-                    MessageType::PairRequest {
-                        device_id,
-                        device_name,
-                        pairing_code,
-                    } => {
-                        let _ = self.app_handle.emit(
-                            "pairing-request",
-                            serde_json::json!({
-                                "device": { "id": device_id, "name": device_name },
-                                "code": pairing_code,
-                                "ip": self.connection.remote_address().ip().to_string(),
-                                "port": self.connection.remote_address().port()
-                            }),
-                        );
-                    }
-                    MessageType::PairResponse {
-                        accepted,
-                        device_id,
-                        device_name,
-                    } if accepted => {
-                        let mut security = self.security.write().await;
-                        let trusted_device = crate::crypto::security::TrustedDevice {
-                            id: device_id.clone(),
-                            name: device_name.clone(),
-                            last_ip: self.connection.remote_address().ip().to_string(),
-                            last_port: self.connection.remote_address().port(),
-                            last_seen: std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
-                        };
-                        let _ = security.add_trusted(trusted_device);
-                        println!("[Pairing] Device {} is now trusted", device_id);
-                    }
-                    _ => {}
-                }
+            MessageType::PairResponse {
+                accepted,
+                device_id,
+                device_name,
+            } => {
+                self.handle_pair_response(accepted, device_id, device_name)
+                    .await
             }
+            MessageType::HistorySync { sender_id, records } => {
+                self.handle_history_sync(sender_id, records).await
+            }
+            MessageType::FileOffer {
+                transfer_id,
+                metadata,
+                sender_id,
+                sender_name,
+            } => {
+                self.receive(
+                    send_stream,
+                    recv_stream,
+                    transfer_id,
+                    metadata,
+                    sender_id,
+                    sender_name,
+                )
+                .await
+            }
+            _ => Err("Protocol violation: unexpected first message".into()),
+        }
+    }
+
+    async fn handle_hello(
+        &self,
+        send_stream: &mut SendStream,
+        device_id: String,
+        device_name: String,
+    ) -> Result<(), crate::GenericError> {
+        let my_id = self.security.read().await.get_device_id().to_string();
+        let my_name = self.settings.read().await.get_settings().device_name;
+
+        write_message(
+            send_stream,
+            &MessageType::HelloAck {
+                device_id: my_id,
+                device_name: my_name,
+            },
+        )
+        .await?;
+
+        // Make the caller visible to us too, without letting it overwrite a device we already know.
+        if let Some(state) = self.app_handle.try_state::<crate::AppState>() {
+            if let Some(discovery) = state.discovery.read().await.as_ref() {
+                discovery
+                    .add_if_unknown(
+                        device_id.clone(),
+                        device_name.clone(),
+                        self.remote_ip(),
+                        crate::APP_PORT,
+                    )
+                    .await;
+            }
+        }
+
+        println!(
+            "[Receiver] Handled Hello ping from {}: {}",
+            device_name, device_id
+        );
+
+        // Finish stream and wait to ensure QUIC delivers the ACK
+        let _ = send_stream.finish();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        Ok(())
+    }
+
+    async fn handle_pair_request(
+        &self,
+        device_id: String,
+        device_name: String,
+        pairing_code: String,
+    ) -> Result<(), crate::GenericError> {
+        if !crate::discovery::mdns::is_valid_device_id(&device_id)
+            || pairing_code.len() != 6
+            || !pairing_code.chars().all(|c| c.is_ascii_digit())
+        {
+            return Err("Malformed pairing request".into());
+        }
+
+        let ip = self.remote_ip();
+        let port = self.connection.remote_address().port();
+        let added = self.pairing.write().await.add_incoming(
+            &device_id,
+            &device_name,
+            &ip,
+            port,
+            &pairing_code,
+        );
+
+        if added {
+            // The code stays in the backend: the user must type what the other screen shows.
+            let _ = self.app_handle.emit(
+                "pairing-request",
+                serde_json::json!({
+                    "device": { "id": device_id, "name": device_name },
+                }),
+            );
+        } else {
+            println!(
+                "[Pairing] Ignoring duplicate pairing request for {}",
+                device_id
+            );
         }
         Ok(())
     }
 
-    async fn read_message(
-        recv: &mut quinn::RecvStream,
-    ) -> Result<MessageType, crate::GenericError> {
-        let mut len_buf = [0u8; 4];
-        recv.read_exact(&mut len_buf).await?;
-        let len = u32::from_be_bytes(len_buf) as usize;
+    async fn handle_pair_response(
+        &self,
+        accepted: bool,
+        device_id: String,
+        device_name: String,
+    ) -> Result<(), crate::GenericError> {
+        let ip = self.remote_ip();
+        if !self.pairing.write().await.take_response(&device_id, &ip) {
+            return Err(format!(
+                "Ignoring unsolicited pairing response from {} ({})",
+                device_id, ip
+            )
+            .into());
+        }
 
-        let mut data = vec![0u8; len];
-        recv.read_exact(&mut data).await?;
+        if accepted {
+            let trusted_device = crate::crypto::security::TrustedDevice {
+                id: device_id.clone(),
+                name: device_name.clone(),
+                last_ip: ip,
+                last_port: self.connection.remote_address().port(),
+                last_seen: chrono::Utc::now().timestamp(),
+            };
+            self.security
+                .write()
+                .await
+                .add_trusted(trusted_device)
+                .map_err(|e| e.to_string())?;
+            println!("[Pairing] Device {} is now trusted", device_id);
+        }
 
-        let msg = bincode::deserialize(&data)?;
-        Ok(msg)
+        let _ = self.app_handle.emit(
+            "pairing-result",
+            serde_json::json!({
+                "deviceId": device_id,
+                "deviceName": device_name,
+                "accepted": accepted,
+            }),
+        );
+        Ok(())
     }
 
-    async fn write_message(
-        send: &mut quinn::SendStream,
-        msg: &MessageType,
+    async fn handle_history_sync(
+        &self,
+        sender_id: String,
+        records: Vec<SyncedTransfer>,
     ) -> Result<(), crate::GenericError> {
-        let data = bincode::serialize(msg)?;
-        let len = data.len() as u32;
-        send.write_all(&len.to_be_bytes()).await?;
-        send.write_all(&data).await?;
-        use tokio::io::AsyncWriteExt;
-        send.flush().await?;
+        if !self.security.read().await.is_trusted(&sender_id) {
+            return Err("Ignoring history from an untrusted device".into());
+        }
+
+        println!(
+            "[Transfer] Received HistorySync with {} records from {}",
+            records.len(),
+            sender_id
+        );
+        if let Some(db) = &*self.database.read().await {
+            for record in records.iter().take(MAX_SYNC_RECORDS) {
+                if let Err(e) = db.import_peer_record(&sender_id, record).await {
+                    println!("[Database] Failed to import synced record: {:?}", e);
+                }
+            }
+        }
+        let _ = self.app_handle.emit("history-updated", ());
         Ok(())
+    }
+
+    async fn reject_offer(&self, send_stream: &mut SendStream, transfer_id: &str, message: &str) {
+        let _ = write_message(
+            send_stream,
+            &MessageType::TransferError {
+                transfer_id: transfer_id.to_string(),
+                message: message.to_string(),
+            },
+        )
+        .await;
+        let _ = send_stream.finish();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    async fn receive(
+        &self,
+        mut send_stream: SendStream,
+        recv_stream: RecvStream,
+        transfer_id: String,
+        metadata: FileMetadata,
+        sender_id: String,
+        sender_name: String,
+    ) -> Result<(), crate::GenericError> {
+        if !self.security.read().await.is_trusted(&sender_id) {
+            println!(
+                "[Receiver] Rejecting offer from untrusted sender: {}",
+                sender_id
+            );
+            self.reject_offer(&mut send_stream, &transfer_id, "Device not trusted")
+                .await;
+            return Err("Untrusted device".into());
+        }
+
+        let mut session = ReceiveSession::new();
+        if let Err(e) = session.on_offer(&transfer_id, &sender_id, &metadata) {
+            self.reject_offer(&mut send_stream, &transfer_id, &e.to_string())
+                .await;
+            return Err(e.into());
+        }
+        if self.check_disk_space(metadata.size).is_err() {
+            self.reject_offer(
+                &mut send_stream,
+                &transfer_id,
+                "Insufficient disk space on receiver",
+            )
+            .await;
+            return Err("Insufficient disk space".into());
+        }
+
+        {
+            let mut registry = self.transfers.write().await;
+            if registry.contains_key(&transfer_id) {
+                drop(registry);
+                self.reject_offer(&mut send_stream, &transfer_id, "Duplicate transfer id")
+                    .await;
+                return Err("Duplicate transfer id".into());
+            }
+            registry.insert(transfer_id.clone(), TransferStatus::Pending);
+        }
+
+        let result = self
+            .run_session(send_stream, recv_stream, session, sender_name, &metadata)
+            .await;
+
+        self.transfers.write().await.remove(&transfer_id);
+        self.renames.write().await.remove(&transfer_id);
+        result
+    }
+
+    async fn run_session(
+        &self,
+        mut send_stream: SendStream,
+        recv_stream: RecvStream,
+        session: ReceiveSession,
+        sender_name: String,
+        metadata: &FileMetadata,
+    ) -> Result<(), crate::GenericError> {
+        let offer = session.offer().cloned().expect("offer validated");
+        let path = self.save_directory.join(&offer.name);
+
+        if let Some(db) = &*self.database.read().await {
+            if let Err(e) = db
+                .record_transfer(crate::db::TransferRecordArgs {
+                    id: &offer.transfer_id,
+                    device_id: &offer.sender_id,
+                    file_name: &offer.name,
+                    file_path: &path.to_string_lossy(),
+                    total_size: offer.total_size as i64,
+                    direction: "receive",
+                    file_hash: "",
+                    is_dir: offer.is_dir,
+                    folder_manifest: None,
+                })
+                .await
+            {
+                println!("[Database] Failed to record transfer: {:?}", e);
+            }
+        }
+
+        // Ask the user
+        let _ = self.app_handle.emit(
+            "file-offer-received",
+            serde_json::json!({
+                "transferId": offer.transfer_id,
+                "fileName": offer.name,
+                "fileSize": offer.total_size,
+                "senderId": offer.sender_id,
+                "senderName": sender_name,
+                "isDir": offer.is_dir,
+                "fileCount": metadata.file_count,
+                "subfolderCount": metadata.subfolder_count,
+                "topExtensions": metadata.top_extensions,
+                "fileExists": path.exists(),
+            }),
+        );
+
+        let (tx, mut rx) = mpsc::channel(4);
+        let reader = tokio::spawn(read_loop(recv_stream, tx));
+
+        let mut st = RxState {
+            session,
+            file: None,
+            last_status: TransferStatus::Pending,
+            current_display: None,
+            last_emit: Instant::now(),
+        };
+
+        let result = self.drive(&mut send_stream, &mut rx, &mut st).await;
+        reader.abort();
+
+        let bytes = st.session.bytes_received() as i64;
+        match result {
+            Ok(End::Completed(outcome)) => {
+                self.set_db_status(&offer.transfer_id, outcome.as_status(), bytes)
+                    .await;
+                self.emit_progress(&st, outcome.as_status());
+                let _ = self.app_handle.emit("history-updated", ());
+                Ok(())
+            }
+            Ok(End::Declined) | Ok(End::Cancelled) => {
+                self.discard_current(&mut st).await;
+                self.set_db_status(&offer.transfer_id, "cancelled", bytes)
+                    .await;
+                self.emit_progress(&st, "cancelled");
+                let _ = self.app_handle.emit("history-updated", ());
+                Ok(())
+            }
+            Err(e) => {
+                println!("[Receiver] Transfer {} failed: {}", offer.transfer_id, e);
+                self.discard_current(&mut st).await;
+                let _ = write_message(
+                    &mut send_stream,
+                    &MessageType::TransferError {
+                        transfer_id: offer.transfer_id.clone(),
+                        message: e.to_string(),
+                    },
+                )
+                .await;
+                let _ = send_stream.finish();
+                self.set_db_status(&offer.transfer_id, "failed", bytes).await;
+                self.emit_progress(&st, "failed");
+                let _ = self.app_handle.emit("history-updated", ());
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn drive(
+        &self,
+        send_stream: &mut SendStream,
+        rx: &mut mpsc::Receiver<Result<Incoming, crate::GenericError>>,
+        st: &mut RxState,
+    ) -> Result<End, crate::GenericError> {
+        let transfer_id = st.session.offer().unwrap().transfer_id.clone();
+        let decision_deadline = Instant::now() + DECISION_TIMEOUT;
+        let mut ticker = tokio::time::interval(Duration::from_millis(500));
+
+        loop {
+            tokio::select! {
+                incoming = rx.recv() => {
+                    let incoming = match incoming {
+                        Some(Ok(incoming)) => incoming,
+                        Some(Err(e)) => return Err(e),
+                        None => return Err("Connection closed by sender".into()),
+                    };
+                    if let Some(end) = self.handle_incoming(incoming, send_stream, st).await? {
+                        return Ok(end);
+                    }
+                }
+                _ = ticker.tick() => {
+                    if st.session.phase() == Phase::AwaitingDecision && Instant::now() > decision_deadline {
+                        st.session.on_reject();
+                        let _ = write_message(send_stream, &MessageType::FileReject {
+                            transfer_id: transfer_id.clone(),
+                            reason: "No response from receiver".to_string(),
+                        }).await;
+                        let _ = send_stream.finish();
+                        return Ok(End::Declined);
+                    }
+
+                    let status = self
+                        .transfers
+                        .read()
+                        .await
+                        .get(&transfer_id)
+                        .cloned()
+                        .unwrap_or(st.last_status);
+                    if status != st.last_status {
+                        let previous = st.last_status;
+                        st.last_status = status;
+                        if let Some(end) = self.handle_local_status(status, previous, send_stream, st).await? {
+                            return Ok(end);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reacts to the local user accepting, declining, pausing, resuming or cancelling.
+    async fn handle_local_status(
+        &self,
+        status: TransferStatus,
+        previous: TransferStatus,
+        send_stream: &mut SendStream,
+        st: &mut RxState,
+    ) -> Result<Option<End>, crate::GenericError> {
+        let transfer_id = st.session.offer().unwrap().transfer_id.clone();
+
+        match (status, previous) {
+            (TransferStatus::InProgress, TransferStatus::Pending) => {
+                if let Some(new_name) = self.renames.write().await.remove(&transfer_id) {
+                    st.session.rename(&new_name)?;
+                }
+                st.session.on_accept()?;
+
+                let offer = st.session.offer().unwrap().clone();
+                if offer.is_dir {
+                    let root = resolve_destination(&self.save_directory, Path::new(&offer.name))?;
+                    tokio::fs::create_dir_all(&root).await?;
+                }
+                if let Some(db) = &*self.database.read().await {
+                    let path = self.save_directory.join(&offer.name);
+                    let _ = db
+                        .update_file_location(&transfer_id, &offer.name, &path.to_string_lossy())
+                        .await;
+                    let _ = db.update_status_only(&transfer_id, "in_progress").await;
+                }
+
+                println!("[Receiver] User accepted file. Sending FileAccept...");
+                write_message(send_stream, &MessageType::FileAccept { transfer_id }).await?;
+                self.emit_progress(st, "in_progress");
+                Ok(None)
+            }
+            (TransferStatus::Cancelled, TransferStatus::Pending) => {
+                println!("[Receiver] User declined file. Sending FileReject...");
+                st.session.on_reject();
+                let _ = write_message(
+                    send_stream,
+                    &MessageType::FileReject {
+                        transfer_id,
+                        reason: "User declined".to_string(),
+                    },
+                )
+                .await;
+                let _ = send_stream.finish();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(Some(End::Declined))
+            }
+            (TransferStatus::Cancelled, _) => {
+                println!("[Receiver] Sending TransferCancel to sender...");
+                let _ = write_message(send_stream, &MessageType::TransferCancel { transfer_id })
+                    .await;
+                // Give sender time to read the message before closing socket
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(Some(End::Cancelled))
+            }
+            (TransferStatus::Paused, _) => {
+                println!("[Receiver] Sending TransferPause to sender...");
+                write_message(send_stream, &MessageType::TransferPause { transfer_id }).await?;
+                self.emit_progress(st, "paused");
+                Ok(None)
+            }
+            (TransferStatus::InProgress, TransferStatus::Paused) => {
+                println!("[Receiver] Sending TransferResume to sender...");
+                write_message(send_stream, &MessageType::TransferResume { transfer_id }).await?;
+                self.emit_progress(st, "in_progress");
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Applies one message from the sender. Anything the session doesn't allow
+    /// in the current state is an error and ends the transfer.
+    async fn handle_incoming(
+        &self,
+        incoming: Incoming,
+        send_stream: &mut SendStream,
+        st: &mut RxState,
+    ) -> Result<Option<End>, crate::GenericError> {
+        let msg = match incoming {
+            Incoming::Chunk { transfer_id, data } => {
+                st.session.on_chunk(&transfer_id, data.len())?;
+                let file = st.file.as_mut().ok_or("Chunk received without an open file")?;
+                file.write_all(&data).await?;
+                st.session.absorb(&data);
+
+                if st.last_emit.elapsed() >= PROGRESS_INTERVAL {
+                    st.last_emit = Instant::now();
+                    let status = if st.last_status == TransferStatus::Paused {
+                        "paused"
+                    } else {
+                        "in_progress"
+                    };
+                    self.emit_progress(st, status);
+                }
+                return Ok(None);
+            }
+            Incoming::Message(msg) => msg,
+        };
+
+        match msg {
+            MessageType::DirectoryManifest { transfer_id, files } => {
+                let paths = st.session.on_manifest(&transfer_id, &files)?;
+                for rel in &paths {
+                    resolve_destination(&self.save_directory, rel)?;
+                }
+
+                if let Ok(manifest_json) = serde_json::to_string(&files) {
+                    if let Some(db) = &*self.database.read().await {
+                        let _ = db.update_folder_manifest(&transfer_id, &manifest_json).await;
+                    }
+                }
+                let _ = self.app_handle.emit(
+                    "folder-manifest",
+                    serde_json::json!({ "transfer_id": transfer_id, "files": files }),
+                );
+            }
+            MessageType::FileStart {
+                transfer_id,
+                relative_path,
+                size,
+            } => {
+                let rel = st.session.on_file_start(&transfer_id, &relative_path, size)?;
+                let full_path = resolve_destination(&self.save_directory, &rel)?;
+
+                let std_file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&full_path)?;
+                use fs2::FileExt;
+                let _ = std_file.allocate(size);
+                st.file = Some(File::from_std(std_file));
+                st.current_display = Some(relative_path);
+                self.emit_progress(st, "in_progress");
+            }
+            MessageType::FileEnd {
+                transfer_id,
+                bytes,
+                hash,
+            } => {
+                let result = st.session.on_file_end(&transfer_id, bytes, &hash)?;
+                if let Some(mut file) = st.file.take() {
+                    file.flush().await?;
+                    // Drop the zero padding left by pre-allocation if the file came up short.
+                    file.set_len(result.received).await?;
+                }
+                if let FileVerdict::Corrupt(reason) = &result.verdict {
+                    println!(
+                        "[Receiver] Discarding {:?}: {}",
+                        result.path, reason
+                    );
+                    let _ = tokio::fs::remove_file(self.save_directory.join(&result.path)).await;
+                }
+                self.emit_progress(st, "in_progress");
+            }
+            MessageType::TransferPause { transfer_id } => {
+                st.session.on_remote_control(&transfer_id, false)?;
+                println!("[Receiver] Transfer paused by sender");
+                self.transfers
+                    .write()
+                    .await
+                    .insert(transfer_id.clone(), TransferStatus::Paused);
+                st.last_status = TransferStatus::Paused;
+                if let Some(db) = &*self.database.read().await {
+                    let _ = db.update_status_only(&transfer_id, "paused").await;
+                }
+                self.emit_progress(st, "paused");
+            }
+            MessageType::TransferResume { transfer_id } => {
+                st.session.on_remote_control(&transfer_id, false)?;
+                println!("[Receiver] Transfer resumed by sender");
+                self.transfers
+                    .write()
+                    .await
+                    .insert(transfer_id.clone(), TransferStatus::InProgress);
+                st.last_status = TransferStatus::InProgress;
+                if let Some(db) = &*self.database.read().await {
+                    let _ = db.update_status_only(&transfer_id, "in_progress").await;
+                }
+                self.emit_progress(st, "in_progress");
+            }
+            MessageType::TransferCancel { transfer_id } => {
+                st.session.on_remote_control(&transfer_id, true)?;
+                println!("[Receiver] Transfer cancelled by sender");
+                return Ok(Some(End::Cancelled));
+            }
+            MessageType::TransferComplete { transfer_id } => {
+                println!("[Transfer] Received TransferComplete");
+                let (outcome, unfinished) = st.session.on_complete(&transfer_id)?;
+                if let Some(rel) = unfinished {
+                    st.file.take();
+                    let _ = tokio::fs::remove_file(self.save_directory.join(rel)).await;
+                }
+
+                write_message(
+                    send_stream,
+                    &MessageType::TransferCompleteAck {
+                        transfer_id,
+                        outcome,
+                    },
+                )
+                .await?;
+                send_stream.finish()?;
+
+                // Give QUIC time to flush the ACK bytes over the wire
+                // before we return and the connection gets dropped
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                self.connection
+                    .close(quinn::VarInt::from_u32(0), b"transfer complete");
+                return Ok(Some(End::Completed(outcome)));
+            }
+            _ => return Err("Protocol violation: unexpected message during transfer".into()),
+        }
+        Ok(None)
+    }
+
+    /// Closes and deletes the file that was being written, if any.
+    async fn discard_current(&self, st: &mut RxState) {
+        st.file.take();
+        if let Some(rel) = st.session.current_path() {
+            let _ = tokio::fs::remove_file(self.save_directory.join(rel)).await;
+        }
+    }
+
+    async fn set_db_status(&self, transfer_id: &str, status: &str, bytes: i64) {
+        if let Some(db) = &*self.database.read().await {
+            if let Err(e) = db.update_transfer_status(transfer_id, status, bytes).await {
+                println!("[Database] Failed to update transfer status: {:?}", e);
+            }
+        }
+    }
+
+    fn emit_progress(&self, st: &RxState, status: &str) {
+        let Some(offer) = st.session.offer() else {
+            return;
+        };
+        let (current_sent, current_total) = match st.session.current_progress() {
+            Some((sent, total)) => (Some(sent), Some(total)),
+            None => (None, None),
+        };
+        let _ = self.app_handle.emit(
+            "transfer-progress",
+            TransferProgress {
+                transfer_id: offer.transfer_id.clone(),
+                device_id: offer.sender_id.clone(),
+                file_name: offer.name.clone(),
+                bytes_sent: st.session.bytes_received(),
+                total_bytes: offer.total_size,
+                direction: "receive".to_string(),
+                status: status.to_string(),
+                current_file_path: st.current_display.clone(),
+                current_file_sent: current_sent,
+                current_file_total: current_total,
+            },
+        );
+    }
+}
+
+/// Reads frames (and chunk payloads) off the stream and forwards them. Chunk
+/// sizes are bounded before allocating; state checks happen in the session.
+async fn read_loop(
+    mut recv_stream: RecvStream,
+    tx: mpsc::Sender<Result<Incoming, crate::GenericError>>,
+) {
+    loop {
+        let item: Result<Incoming, crate::GenericError> = match read_message(&mut recv_stream).await
+        {
+            Ok(MessageType::ChunkData {
+                transfer_id,
+                chunk_size,
+            }) => {
+                let len = chunk_size as usize;
+                if len == 0 || len > MAX_CHUNK_SIZE {
+                    Err(format!("Protocol violation: invalid chunk size {}", len).into())
+                } else {
+                    let mut data = vec![0u8; len];
+                    match recv_stream.read_exact(&mut data).await {
+                        Ok(()) => Ok(Incoming::Chunk { transfer_id, data }),
+                        Err(e) => Err(e.into()),
+                    }
+                }
+            }
+            Ok(msg) => Ok(Incoming::Message(msg)),
+            Err(e) => Err(e),
+        };
+
+        let stop = item.is_err();
+        if tx.send(item).await.is_err() || stop {
+            break;
+        }
     }
 }

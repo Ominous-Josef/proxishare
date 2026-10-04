@@ -274,25 +274,6 @@ export function useFileTransfer() {
     }
   };
 
-  const syncHistory = async (deviceId: string) => {
-    try {
-      const reachableIp = await invoke<string | null>(
-        "find_reachable_device_ip",
-        { deviceId }
-      );
-      if (reachableIp) {
-        await invoke("sync_history", {
-          deviceId,
-          ip: reachableIp,
-          port: 14201, // default port, or we could look it up from useDevices
-        });
-        console.log(`[FileTransfer] Synced history with ${deviceId}`);
-      }
-    } catch (e) {
-      console.error("[FileTransfer] Failed to sync history:", e);
-    }
-  };
-
   const loadHistory = async (limit?: number, offset?: number) => {
     try {
       const records = await invoke<TransferRecord[]>("get_transfer_history", {
@@ -386,6 +367,5 @@ export function useFileTransfer() {
     pauseTransfer,
     resumeTransfer,
     cancelTransfer,
-    syncHistory,
   };
 }

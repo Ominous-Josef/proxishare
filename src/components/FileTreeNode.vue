@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronRight, ChevronDown, File, Folder, CheckCircle2, Circle } from 'lucide-vue-next';
+import { ChevronRight, ChevronDown, File, Folder, CheckCircle2 } from 'lucide-vue-next';
 
 defineProps<{
   node: any; // We'll just use any here for simplicity since types aren't easily shared without a separate .ts file

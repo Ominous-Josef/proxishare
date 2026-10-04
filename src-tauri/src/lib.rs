@@ -1,6 +1,7 @@
 pub mod crypto;
 pub mod db;
 pub mod discovery;
+pub mod pairing;
 pub mod settings;
 pub mod sync;
 pub mod transfer;
@@ -32,6 +33,9 @@ pub enum TransferStatus {
 }
 
 pub type TransferRegistry = Arc<RwLock<HashMap<String, TransferStatus>>>;
+
+/// QUIC port every ProxiShare instance listens on.
+pub const APP_PORT: u16 = 51731;
 pub type GenericError = Box<dyn std::error::Error + Send + Sync>;
 
 pub struct AppState {
@@ -43,6 +47,7 @@ pub struct AppState {
     pub transfers: TransferRegistry,
     pub renames: Arc<RwLock<HashMap<String, String>>>,
     pub settings: Arc<RwLock<SettingsManager>>,
+    pub pairing: Arc<RwLock<pairing::PairingState>>,
 }
 
 #[tauri::command]
@@ -60,8 +65,8 @@ async fn start_discovery(state: tauri::State<'_, AppState>) -> Result<bool, Stri
 
 #[tauri::command]
 async fn add_device_manually(ip: String, state: tauri::State<'_, AppState>) -> Result<bool, String> {
-    let port = 51731; // Default port
-    
+    let port = APP_PORT;
+
     // Get our device info
     let my_id = state.security.read().await.get_device_id().to_string();
     let my_name = state.settings.read().await.get_settings().device_name.clone();
@@ -70,6 +75,9 @@ async fn add_device_manually(ip: String, state: tauri::State<'_, AppState>) -> R
     let transfer = state.transfer.read().await.clone();
     if let Some(tm) = transfer {
         match tm.ping_device(&ip, port, my_id, my_name).await {
+            Ok((device_id, _)) if !crate::discovery::mdns::is_valid_device_id(&device_id) => {
+                return Err(format!("{} answered with an invalid device id", ip));
+            }
             Ok((device_id, device_name)) => {
                 // If ping succeeds, inject it into discovery
                 if let Some(discovery) = state.discovery.read().await.as_ref() {
@@ -97,7 +105,7 @@ async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec
 
     // Inject offline trusted devices into the discovery response
     let security = state.security.read().await;
-    for (_, td) in &security.trusted_devices {
+    for td in security.trusted_devices.values() {
         // Only add if not already currently discovered (online)
         if !devices.iter().any(|d| d.id == td.id) {
             devices.push(Device {
@@ -174,7 +182,7 @@ async fn send_file(
         let transfers_clone = state.transfers.clone();
         
         tokio::spawn(async move {
-            let send_result: Result<(), String> = tm
+            let send_result = tm
                 .send_file(
                     transfer_id.clone(),
                     device_id.clone(),
@@ -187,40 +195,38 @@ async fn send_file(
                 .await
                 .map_err(|e| e.to_string());
 
-            // Update transfer status
+            // Record what actually happened, as confirmed by the receiver
             {
                 let db_lock = db_clone.read().await;
                 if let Some(db) = &*db_lock {
-                    let status = match &send_result {
-                        Ok(_) => "completed",
-                        Err(e) if e.contains("cancelled") => "cancelled",
-                        Err(_) => "failed",
+                    let update = match &send_result {
+                        Ok(result) => {
+                            db.update_transfer_status(
+                                &transfer_id,
+                                result.outcome.as_status(),
+                                result.bytes_sent as i64,
+                            )
+                            .await
+                        }
+                        Err(e) if e.contains("cancelled") => {
+                            db.update_status_only(&transfer_id, "cancelled").await
+                        }
+                        Err(_) => db.update_status_only(&transfer_id, "failed").await,
                     };
-                    if let Err(e) = db
-                        .update_transfer_status(&transfer_id, status, file_size)
-                        .await
-                    {
+                    if let Err(e) = update {
                         println!("[Database] Failed to update transfer status: {:?}", e);
                     }
                 }
             }
-            
+            transfers_clone.write().await.remove(&transfer_id);
+
             // Notify frontend that history changed
             use tauri::Emitter;
             let _ = app_clone.emit("history-updated", ());
 
             match send_result {
-                Ok(_) => {
-                    println!("[Command] send_file completed successfully");
-                }
-                Err(e) => {
-                    let error_msg = if e.contains("cancelled") {
-                        "Transfer cancelled".to_string()
-                    } else {
-                        format!("Failed to send file: {}", e)
-                    };
-                    println!("[Command] {}", error_msg);
-                }
+                Ok(result) => println!("[Command] send_file finished: {:?}", result.outcome),
+                Err(e) => println!("[Command] send_file failed: {}", e),
             }
         });
 
@@ -331,7 +337,7 @@ async fn get_network_diagnostics(
             interfaces: get_network_interfaces(),
             local_ips: crate::discovery::mdns::get_local_ips(),
             mdns_port: 5353,
-            app_port: 51731,
+            app_port: APP_PORT,
             subnet_info: "Unknown".to_string(),
         })
     }
@@ -345,47 +351,37 @@ fn get_local_network_interfaces() -> Vec<NetworkInterface> {
 #[tauri::command]
 async fn request_pairing(
     state: tauri::State<'_, AppState>,
-    _device_id: String,
+    device_id: String,
     ip: String,
     port: u16,
 ) -> Result<String, String> {
-    // Generate a random 6-digit pairing code
+    // Generate a random 6-digit pairing code. The other user has to type it in,
+    // which proves they can see this screen.
     let pairing_code = {
         use rand::Rng;
         let mut rng = rand::thread_rng();
         format!("{:06}", rng.gen_range(0..1_000_000))
     };
 
-    // Get our device info for the pairing request
-    let discovery_lock = state.discovery.read().await;
-    let my_id = discovery_lock
-        .as_ref()
-        .map(|d| d.get_my_id())
-        .unwrap_or_else(|| "unknown".to_string());
-    drop(discovery_lock);
+    let my_id = state.security.read().await.get_device_id().to_string();
+    let my_name = state.settings.read().await.get_settings().device_name;
 
-    // Get hostname as device name
-    let my_name = hostname::get()
-        .ok()
-        .and_then(|h| h.into_string().ok())
-        .unwrap_or_else(|| "ProxiNode".to_string());
+    // Only a response to a request we actually made will be trusted.
+    state.pairing.write().await.expect_response(&device_id, &ip);
 
-    // Send pairing request message
     let tm_opt = state.transfer.read().await.clone();
-    if let Some(tm) = tm_opt {
-        tm
-            .send_message(
-                ip.clone(),
-                port,
-                crate::transfer::protocol::MessageType::PairRequest {
-                    device_id: my_id,
-                    device_name: my_name,
-                    pairing_code: pairing_code.clone(),
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-    }
+    let tm = tm_opt.ok_or("Transfer manager not initialized")?;
+    tm.send_message(
+        ip.clone(),
+        port,
+        crate::transfer::protocol::MessageType::PairRequest {
+            device_id: my_id,
+            device_name: my_name,
+            pairing_code: pairing_code.clone(),
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     Ok(pairing_code)
 }
@@ -397,6 +393,8 @@ async fn accept_file_offer(
     new_name: Option<String>,
 ) -> Result<(), String> {
     if let Some(name) = new_name {
+        let name = crate::transfer::session::sanitize_file_name(&name)
+            .ok_or("Invalid file name: use a plain name without folders or special path characters")?;
         state.renames.write().await.insert(transfer_id.clone(), name);
     }
     let mut transfers = state.transfers.write().await;
@@ -482,26 +480,30 @@ async fn cancel_transfer(
 #[tauri::command]
 async fn accept_pairing(
     device_id: String,
-    device_name: String,
-    ip: String,
-    port: u16,
+    code: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    // Address and name come from the stored request, never from the frontend.
+    let pending = state
+        .pairing
+        .write()
+        .await
+        .verify_incoming(&device_id, &code)
+        .map_err(|e| e.to_string())?;
+
     println!(
         "[Pairing] Accepting pairing for device: {} at {}:{}",
-        device_id, ip, port
+        device_id, pending.ip, pending.port
     );
-    let settings = state.settings.read().await;
-    let my_name = settings.get_settings().device_name;
-    drop(settings);
+    let my_name = state.settings.read().await.get_settings().device_name;
 
     let mut security = state.security.write().await;
     let trusted_device = crate::crypto::security::TrustedDevice {
         id: device_id.clone(),
-        name: device_name.clone(),
-        last_ip: ip.clone(),
-        last_port: port,
-        last_seen: std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
+        name: pending.name.clone(),
+        last_ip: pending.ip.clone(),
+        last_port: pending.port,
+        last_seen: chrono::Utc::now().timestamp(),
     };
     security
         .add_trusted(trusted_device)
@@ -515,8 +517,8 @@ async fn accept_pairing(
     if let Some(tm) = tm_opt {
         let _ = tm
             .send_message(
-                ip.clone(),
-                port,
+                pending.ip.clone(),
+                pending.port,
                 crate::transfer::protocol::MessageType::PairResponse {
                     accepted: true,
                     device_id: my_id,
@@ -526,32 +528,31 @@ async fn accept_pairing(
             .await;
     }
 
-    // Trigger history sync
-    let _ = sync_history(state, device_id, ip, port).await;
+    if let Err(e) = push_history(&state, &device_id, pending.ip, pending.port).await {
+        println!("[Sync] History sync after pairing failed: {}", e);
+    }
 
     Ok(())
 }
 
 #[tauri::command]
-async fn reject_pairing(
-    device_id: String,
-    ip: String,
-    port: u16,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+async fn reject_pairing(device_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     println!("[Pairing] Rejecting pairing for device: {}", device_id);
+    let Some(pending) = state.pairing.write().await.remove_incoming(&device_id) else {
+        return Ok(());
+    };
 
-    // Send PairResponse to the device
+    let my_id = state.security.read().await.get_device_id().to_string();
     let tm_opt = state.transfer.read().await.clone();
     if let Some(tm) = tm_opt {
         let _ = tm
             .send_message(
-                ip.clone(),
-                port,
+                pending.ip,
+                pending.port,
                 crate::transfer::protocol::MessageType::PairResponse {
                     accepted: false,
-                    device_id: "".to_string(), // They don't need our ID if rejected
-                    device_name: "".to_string(), // They don't need our name if rejected
+                    device_id: my_id,
+                    device_name: String::new(),
                 },
             )
             .await;
@@ -560,13 +561,16 @@ async fn reject_pairing(
     Ok(())
 }
 
-#[tauri::command]
-async fn sync_history(
-    state: tauri::State<'_, AppState>,
-    device_id: String,
+/// Shares our history with a paired device, limited to transfers with that device.
+async fn push_history(
+    state: &AppState,
+    device_id: &str,
     ip: String,
     port: u16,
 ) -> Result<(), String> {
+    if !state.security.read().await.is_trusted(device_id) {
+        return Err("Device is not paired".to_string());
+    }
     println!(
         "[Sync] Syncing history with device: {} at {}:{}",
         device_id, ip, port
@@ -574,28 +578,29 @@ async fn sync_history(
 
     let records = {
         let db_lock = state.database.read().await;
-        if let Some(db) = &*db_lock {
-            db.get_transfer_history(100, 0)
-                .await
-                .map_err(|e| e.to_string())?
-        } else {
-            return Err("Database not initialized".to_string());
-        }
+        let db = db_lock.as_ref().ok_or("Database not initialized")?;
+        db.get_device_transfers(device_id, 100, 0)
+            .await
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(|r| r.to_synced())
+            .collect()
     };
+    let sender_id = state.security.read().await.get_device_id().to_string();
 
-    let tm_opt = state.transfer.read().await.clone();
-    if let Some(tm) = tm_opt {
-        tm.send_message(
-            ip,
-            port,
-            crate::transfer::protocol::MessageType::HistorySync { records },
-        )
+    let tm = state
+        .transfer
+        .read()
         .await
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    } else {
-        Err("Transfer manager not initialized".to_string())
-    }
+        .clone()
+        .ok_or("Transfer manager not initialized")?;
+    tm.send_message(
+        ip,
+        port,
+        crate::transfer::protocol::MessageType::HistorySync { sender_id, records },
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -671,19 +676,51 @@ async fn update_settings(
     let mut settings_manager = state.settings.write().await;
     
     // Check if device name changed to update discovery service
-    let old_name = settings_manager.get_settings().device_name;
+    let old = settings_manager.get_settings();
     settings_manager.update_settings(settings.clone())?;
-    
-    if old_name != settings.device_name {
-        let discovery_lock = state.discovery.read().await;
-        if let Some(discovery) = &*discovery_lock {
+
+    let discovery_lock = state.discovery.read().await;
+    if let Some(discovery) = &*discovery_lock {
+        if old.device_name != settings.device_name {
             if let Err(e) = discovery.update_name(settings.device_name.clone()) {
                 println!("[Settings] Failed to update discovery name: {}", e);
+            }
+        }
+        if old.is_discoverable != settings.is_discoverable {
+            if let Err(e) = discovery.set_discoverable(settings.is_discoverable) {
+                println!("[Settings] Failed to update discoverability: {}", e);
             }
         }
     }
     
     Ok(())
+}
+
+/// Drops devices that haven't been seen for a while, unless they still answer
+/// a QUIC ping (the app listens on UDP, so a TCP probe would always fail).
+fn spawn_stale_device_cleanup(
+    discovery: Arc<DiscoveryService>,
+    tm: Arc<TransferManager>,
+    my_id: String,
+    my_name: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            let stale = discovery
+                .stale_devices(crate::discovery::mdns::DEVICE_TIMEOUT_SECS)
+                .await;
+            for (id, ip, port) in stale {
+                match tm.ping_device(&ip, port, my_id.clone(), my_name.clone()).await {
+                    Ok((answered_id, _)) if answered_id == id => discovery.touch(&id).await,
+                    _ => {
+                        println!("[mDNS] Removing stale device: {}", id);
+                        discovery.remove(&id).await;
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -711,14 +748,17 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(&app_data_dir);
             }
 
+            // Reuse the stored id only if it's a valid UUID; otherwise start fresh.
             let device_id_path = app_data_dir.join("device_id.txt");
-            let device_id = if device_id_path.exists() {
-                std::fs::read_to_string(&device_id_path)
-                    .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
-            } else {
-                let id = uuid::Uuid::new_v4().to_string();
-                let _ = std::fs::write(&device_id_path, &id);
-                id
+            let device_id = match std::fs::read_to_string(&device_id_path) {
+                Ok(id) if crate::discovery::mdns::is_valid_device_id(id.trim()) => {
+                    id.trim().to_string()
+                }
+                _ => {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    let _ = std::fs::write(&device_id_path, &id);
+                    id
+                }
             };
 
             let default_device_name = hostname::get()
@@ -756,12 +796,13 @@ pub fn run() {
             let device_name = initial_settings.device_name;
 
             let renames = Arc::new(RwLock::new(HashMap::new()));
+            let pairing = Arc::new(RwLock::new(pairing::PairingState::default()));
 
             println!("Initializing services with block_on");
             let (discovery, transfer_manager) = tauri::async_runtime::block_on(async {
                 println!("Inside block_on: Initializing TransferManager");
                 // Initialize Transfer Manager
-                let port = 51731;
+                let port = APP_PORT;
                 let tm = TransferManager::new(
                     port,
                     app_handle.clone(),
@@ -771,12 +812,13 @@ pub fn run() {
                     settings.clone(),
                     security.clone(),
                     renames.clone(),
+                    pairing.clone(),
                 )?;
                 println!("Inside block_on: TransferManager initialized");
 
                 println!("Inside block_on: Initializing DiscoveryService");
                 // Initialize Discovery Service
-                let ds = DiscoveryService::new(device_id, device_name, port)?;
+                let ds = DiscoveryService::new(device_id.clone(), device_name.clone(), port)?;
                 println!("Inside block_on: DiscoveryService initialized");
 
                 Ok::<(Arc<DiscoveryService>, Arc<TransferManager>), GenericError>((
@@ -792,12 +834,20 @@ pub fn run() {
                 tm_clone.start_listening().await;
             });
 
-            if let Err(e) = discovery.start_broadcasting() {
-                println!("Error starting broadcasting: {:?}", e);
+            if initial_settings.is_discoverable {
+                if let Err(e) = discovery.start_broadcasting() {
+                    println!("Error starting broadcasting: {:?}", e);
+                }
             }
             if let Err(e) = discovery.start_discovery() {
                 println!("Error starting discovery: {:?}", e);
             }
+            spawn_stale_device_cleanup(
+                discovery.clone(),
+                transfer_manager.clone(),
+                device_id.clone(),
+                device_name.clone(),
+            );
             
             let app_state = AppState {
                 discovery: Arc::new(RwLock::new(Some(discovery))),
@@ -808,6 +858,7 @@ pub fn run() {
                 transfers,
                 renames,
                 settings,
+                pairing,
             };
             app.manage(app_state);
 
@@ -839,7 +890,6 @@ pub fn run() {
             pause_transfer,
             resume_transfer,
             cancel_transfer,
-            sync_history,
             accept_file_offer,
             reject_file_offer,
             get_settings,

@@ -6,7 +6,6 @@ import AppButton from "./AppButton.vue";
 const props = defineProps<{
   isOpen: boolean;
   deviceName: string;
-  expectedCode?: string;
 }>();
 
 const emit = defineEmits<{
@@ -54,8 +53,6 @@ watch(
         <h2 class="text-headline-lg font-headline-lg text-on-surface mb-2 relative z-10 tracking-tight">Pairing {{ deviceName }}</h2>
         <p class="text-body-md font-body-md text-on-surface-variant mb-6 max-w-[280px] relative z-10">
           Enter the 6-digit code shown on the other device to establish a secure connection.
-          <br>
-          <span v-if="expectedCode" class="text-primary font-medium mt-1 inline-block">(Expected: {{ expectedCode }})</span>
         </p>
 
         <!-- Code Input -->

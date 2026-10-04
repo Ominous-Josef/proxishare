@@ -1,10 +1,12 @@
 pub mod protocol;
 pub mod receiver;
 pub mod sender;
+pub mod session;
 
 use crate::crypto::encryption::CertificateManager;
+use crate::transfer::protocol::{read_message, write_message, MessageType};
 use crate::transfer::receiver::FileReceiver;
-use crate::transfer::sender::FileSender;
+use crate::transfer::sender::{FileSender, TransferResult};
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,9 +21,11 @@ pub struct TransferManager {
     settings: Arc<RwLock<crate::settings::SettingsManager>>,
     security: Arc<RwLock<crate::crypto::security::SecurityService>>,
     renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
+    pairing: Arc<RwLock<crate::pairing::PairingState>>,
 }
 
 impl TransferManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         port: u16,
         app_handle: tauri::AppHandle,
@@ -31,6 +35,7 @@ impl TransferManager {
         settings: Arc<RwLock<crate::settings::SettingsManager>>,
         security: Arc<RwLock<crate::crypto::security::SecurityService>>,
         renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
+        pairing: Arc<RwLock<crate::pairing::PairingState>>,
     ) -> Result<Self, crate::GenericError> {
         let cert_manager = CertificateManager::generate_self_signed()?;
 
@@ -59,6 +64,7 @@ impl TransferManager {
             settings,
             security,
             renames,
+            pairing,
         })
     }
 
@@ -80,16 +86,18 @@ impl TransferManager {
             let transfers = self.transfers.clone();
             let security = self.security.clone();
             let renames = self.renames.clone();
+            let settings = self.settings.clone();
+            let pairing = self.pairing.clone();
             tauri::async_runtime::spawn(async move {
                 match conn.await {
                     Ok(connection) => {
                         println!("[Transfer] Connection established from remote peer");
                         let receiver = FileReceiver::new(
-                            save_dir, connection, app_handle, database, transfers, security, renames,
+                            save_dir, connection, app_handle, database, transfers, security,
+                            renames, settings, pairing,
                         );
-                        match receiver.handle_transfer().await {
-                            Ok(_) => println!("[Transfer] File received successfully"),
-                            Err(e) => println!("[Transfer] Error receiving file: {:?}", e),
+                        if let Err(e) = receiver.handle_transfer().await {
+                            println!("[Transfer] Incoming connection ended with error: {}", e);
                         }
                     }
                     Err(e) => {
@@ -104,7 +112,7 @@ impl TransferManager {
         &self,
         target_ip: String,
         target_port: u16,
-        message: crate::transfer::protocol::MessageType,
+        message: MessageType,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!(
             "[Transfer] Sending message to {}:{}",
@@ -122,17 +130,7 @@ impl TransferManager {
             };
 
         let (mut send_stream, _) = connection.open_bi().await?;
-
-        // Use the existing write_message from sender module logic (we might need to expose it or duplicate it safely)
-        // For now, let's just implement a quick write since FileSender::write_message is private
-        // and we don't want to refactor everything.
-        // Better yet, let's make FileSender::write_message public or move it to protocol.
-
-        // Quick implementation of write_message here for now
-        let data = bincode::serialize(&message)?;
-        let len = data.len() as u32;
-        send_stream.write_all(&len.to_be_bytes()).await?;
-        send_stream.write_all(&data).await?;
+        write_message(&mut send_stream, &message).await?;
 
         send_stream.finish()?;
 
@@ -162,30 +160,25 @@ impl TransferManager {
 
         let (mut send_stream, mut recv_stream) = connection.open_bi().await?;
 
-        let msg = crate::transfer::protocol::MessageType::Hello {
+        let msg = MessageType::Hello {
             device_id: my_id,
             device_name: my_name,
         };
+        write_message(&mut send_stream, &msg).await?;
 
-        let data = bincode::serialize(&msg)?;
-        let len = data.len() as u32;
-        send_stream.write_all(&len.to_be_bytes()).await?;
-        send_stream.write_all(&data).await?;
+        // An unresponsive or older peer must not hang the caller.
+        let ack_msg = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_message(&mut recv_stream),
+        )
+        .await
+        {
+            Ok(res) => res?,
+            Err(_) => return Err("Timed out waiting for HelloAck".into()),
+        };
 
-        // Wait for HelloAck
-        let mut len_buf = [0u8; 4];
-        recv_stream.read_exact(&mut len_buf).await?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-
-        let mut ack_data = vec![0u8; len];
-        recv_stream.read_exact(&mut ack_data).await?;
-
-        let ack_msg = bincode::deserialize(&ack_data)?;
-        
         let result = match ack_msg {
-            crate::transfer::protocol::MessageType::HelloAck { device_id, device_name } => {
-                Ok((device_id, device_name))
-            },
+            MessageType::HelloAck { device_id, device_name } => Ok((device_id, device_name)),
             _ => Err("Invalid response from device".into()),
         };
 
@@ -196,6 +189,7 @@ impl TransferManager {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_file(
         &self,
         transfer_id: String,
@@ -205,7 +199,7 @@ impl TransferManager {
         file_path: PathBuf,
         transfers: crate::TransferRegistry,
         is_dir: bool,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<TransferResult, crate::GenericError> {
         println!(
             "[Transfer] Attempting to send file {:?} to {}:{}",
             file_path, target_ip, target_port
@@ -248,9 +242,12 @@ impl TransferManager {
             .send_file(transfer_id.clone(), file_path.clone(), transfers, is_dir)
             .await
         {
-            Ok(_) => {
-                println!("[Transfer] File {:?} sent successfully!", file_path);
-                Ok(())
+            Ok(result) => {
+                println!(
+                    "[Transfer] File {:?} sent, receiver reported {:?}",
+                    file_path, result.outcome
+                );
+                Ok(result)
             }
             Err(e) => {
                 println!("[Transfer] Failed to send file: {:?}", e);
