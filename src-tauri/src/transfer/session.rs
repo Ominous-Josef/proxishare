@@ -426,6 +426,24 @@ pub fn sanitize_file_name(raw: &str) -> Option<String> {
     path.to_str().map(|s| s.to_string())
 }
 
+/// First free name in `dir` for `name`: `name`, then `name (1).ext`, `name (2).ext`...
+/// Used when auto-accepting, so an existing file is never silently overwritten.
+pub fn unique_name(dir: &Path, name: &str) -> String {
+    if !dir.join(name).exists() {
+        return name.to_string();
+    }
+    let path = Path::new(name);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    let ext = path.extension().and_then(|e| e.to_str());
+    (1..)
+        .map(|i| match ext {
+            Some(ext) => format!("{} ({}).{}", stem, i, ext),
+            None => format!("{} ({})", stem, i),
+        })
+        .find(|candidate| !dir.join(candidate).exists())
+        .unwrap()
+}
+
 /// Resolves `rel` (already sanitized) under `base`, creating parent directories.
 /// Fails if an existing symlink would redirect the write outside `base`.
 pub fn resolve_destination(base: &Path, rel: &Path) -> std::io::Result<PathBuf> {
@@ -639,6 +657,20 @@ mod tests {
         assert_eq!(sanitize_relative_path("./a.txt"), Some(PathBuf::from("a.txt")));
         assert_eq!(sanitize_file_name("..."), Some("...".to_string()));
         assert_eq!(sanitize_file_name("a/b"), None);
+    }
+
+    #[test]
+    fn unique_name_never_reuses_an_existing_name() {
+        let dir = std::env::temp_dir().join(format!("proxishare-uniq-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(unique_name(&dir, "a.txt"), "a.txt");
+        std::fs::write(dir.join("a.txt"), b"").unwrap();
+        assert_eq!(unique_name(&dir, "a.txt"), "a (1).txt");
+        std::fs::write(dir.join("a (1).txt"), b"").unwrap();
+        assert_eq!(unique_name(&dir, "a.txt"), "a (2).txt");
+        std::fs::create_dir(dir.join("photos")).unwrap();
+        assert_eq!(unique_name(&dir, "photos"), "photos (1)");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { confirm } from "@tauri-apps/plugin-dialog";
 
 import { computed, onMounted, ref, watchEffect } from "vue";
 import DeviceList from "./components/DeviceList.vue";
@@ -28,7 +29,8 @@ const pairingRequest = ref<{
   device: { id: string; name: string };
   isOpen: boolean;
 } | null>(null);
-const senderPairingCode = ref<string | null>(null);
+// A pairing we started: show this code until the other user types it.
+const outgoingPairing = ref<{ deviceId: string; code: string } | null>(null);
 
 const fileOffer = ref<{
   isOpen: boolean;
@@ -66,7 +68,7 @@ const handlePair = async (id: string) => {
         port: device.port,
       });
       console.log("[Pairing] Pairing initiated, code:", code);
-      senderPairingCode.value = code;
+      outgoingPairing.value = { deviceId: id, code };
       await refreshDevices();
       handleSelect(id);
     } catch (e) {
@@ -94,6 +96,33 @@ const handlePairConfirm = async (code: string) => {
     if (!message.startsWith("Wrong pairing code")) {
       request.isOpen = false;
     }
+  }
+};
+
+const cancelOutgoingPairing = async () => {
+  const pairing = outgoingPairing.value;
+  if (!pairing) return;
+  outgoingPairing.value = null;
+  try {
+    await invoke("cancel_pairing", { deviceId: pairing.deviceId });
+  } catch (e) {
+    console.error("[Pairing] Cancel failed:", e);
+  }
+};
+
+const handleForget = async (id: string) => {
+  const device = devices.value.find((d) => d.id === id);
+  const ok = await confirm(
+    `Forget ${device?.name ?? "this device"}? You'll need to pair again to exchange files. Transfer history is kept.`,
+    { title: "Forget device", kind: "warning" }
+  );
+  if (!ok) return;
+  try {
+    await invoke("forget_device", { deviceId: id });
+    addToast(`Forgot ${device?.name ?? "device"}`, "success");
+    await refreshDevices();
+  } catch (e) {
+    addToast("Failed to forget device: " + e, "error");
   }
 };
 
@@ -141,14 +170,36 @@ onMounted(async () => {
 
   // The other device answered a pairing request we sent.
   await listen("pairing-result", async (event: any) => {
-    const { deviceName, accepted } = event.payload;
-    senderPairingCode.value = null;
+    const { deviceId, deviceName, accepted, reason } = event.payload;
+    if (outgoingPairing.value?.deviceId === deviceId) {
+      outgoingPairing.value = null;
+    }
     if (accepted) {
       addToast(`Paired with ${deviceName}`, "success");
     } else {
-      addToast("Pairing was declined", "error");
+      addToast(reason || "Pairing did not complete", "error");
     }
     await refreshDevices();
+  });
+
+  // The device that asked to pair gave up, or the request expired.
+  await listen("pairing-cancelled", (event: any) => {
+    const { deviceId, reason } = event.payload;
+    const request = pairingRequest.value;
+    if (request && request.device.id === deviceId && request.isOpen) {
+      request.isOpen = false;
+      addToast(reason || "Pairing was cancelled", "error");
+    }
+  });
+
+  await listen("file-auto-accepted", (event: any) => {
+    const { fileName, senderName } = event.payload;
+    addToast(`Receiving ${fileName} from ${senderName}`, "success");
+  });
+
+  // Sending stopped before it began, e.g. the device failed the identity check.
+  await listen("send-failed", (event: any) => {
+    addToast(String(event.payload.message), "error");
   });
 
   await listen("file-offer-received", (event: any) => {
@@ -271,6 +322,8 @@ const handleRejectFile = async (transferId: string) => {
           <DeviceDetailsView
             :device="selectedDevice"
             @back="currentView = 'devices'; selectedId = null"
+            @pair="handlePair"
+            @forget="handleForget"
           />
         </template>
 
@@ -320,9 +373,9 @@ const handleRejectFile = async (transferId: string) => {
 
     <!-- Sender Pairing Code Modal -->
     <Transition name="fade">
-      <div v-if="senderPairingCode" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click.self="senderPairingCode = null">
+      <div v-if="outgoingPairing" class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" @click.self="cancelOutgoingPairing">
         <div class="bg-surface-container rounded-3xl p-8 border border-white/10 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.5)] max-w-sm w-full mx-4 flex flex-col items-center text-center relative overflow-hidden">
-          <AppButton class="absolute top-4 right-4" variant="ghost" size="icon" @click="senderPairingCode = null">
+          <AppButton class="absolute top-4 right-4" variant="ghost" size="icon" @click="cancelOutgoingPairing">
             <X class="w-5 h-5" />
           </AppButton>
           
@@ -331,13 +384,13 @@ const handleRejectFile = async (transferId: string) => {
           </div>
           
           <h3 class="text-headline-lg font-headline-lg text-on-surface mb-2">Pairing Code</h3>
-          <p class="text-body-sm text-on-surface-variant mb-6">Enter this code on the receiving device to establish a secure connection.</p>
+          <p class="text-body-sm text-on-surface-variant mb-6">Enter this code on the other device. It's unique to these two devices, so a matching code proves nobody is in between.</p>
           
           <div class="bg-surface-container-lowest border border-outline-variant/30 rounded-xl p-4 w-full mb-6 flex justify-center shadow-inner">
-            <span class="text-[36px] font-code-display text-primary tracking-[0.25em] font-bold">{{ senderPairingCode }}</span>
+            <span class="text-[36px] font-code-display text-primary tracking-[0.25em] font-bold">{{ outgoingPairing.code }}</span>
           </div>
           
-          <AppButton class="w-full" variant="surface" @click="senderPairingCode = null">
+          <AppButton class="w-full" variant="surface" @click="cancelOutgoingPairing">
             Cancel Pairing
           </AppButton>
         </div>

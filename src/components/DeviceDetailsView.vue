@@ -15,6 +15,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "back"): void;
+  (e: "pair", id: string): void;
+  (e: "forget", id: string): void;
 }>();
 
 const formatLastSeen = (timestamp: number) => {
@@ -66,8 +68,17 @@ const formatSpeed = (bps: number) => {
             <span>{{ device.ip }}</span>
             <span class="w-1 h-1 rounded-full bg-surface-variant"></span>
             <span>{{ formatLastSeen(device.last_seen) }}</span>
-            <span v-if="device.isTrusted" class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-primary/10 text-primary border border-primary/20">Trusted</span>
+            <span v-if="device.isTrusted" class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-primary/10 text-primary border border-primary/20">Verified</span>
+            <span v-else-if="device.trust === 'needs_repair'" class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-warning/10 text-warning border border-warning/20">Needs re-pairing</span>
           </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <AppButton v-if="!device.isTrusted" size="sm" variant="outline" class="text-primary border-primary/30 hover:bg-primary/10" @click="emit('pair', device.id)">
+            {{ device.trust === 'needs_repair' ? 'Re-pair' : 'Pair' }}
+          </AppButton>
+          <AppButton v-if="device.trust !== 'none'" size="sm" variant="ghost" class="text-on-surface-variant hover:text-danger" @click="emit('forget', device.id)">
+            Forget
+          </AppButton>
         </div>
       </div>
     </div>

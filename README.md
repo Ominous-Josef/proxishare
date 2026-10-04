@@ -7,7 +7,8 @@
 - **Instant Discovery:** Automatically find devices on your local network using mDNS (zero-configuration).
 - **Blazing Fast Transfers:** Built on **QUIC (via Quinn)** for reliable, multiplexed, and lightning-fast raw file streaming that is highly resilient to local network drops.
 - **Interactive File Acceptance:** Receive UI prompts allowing you to `[Accept]` or `[Decline]` incoming files before anything is written to disk.
-- **Pairing:** Devices must be paired before they can send each other files. The receiving user confirms by typing the 6-digit code shown on the requesting device.
+- **Verified Pairing:** Devices must be paired before they can send each other files. The receiving user types the 6-digit code shown on the requesting device. The code is derived from both devices' keys, so a match proves nobody is in between.
+- **Auto-accept (optional):** Let files from paired devices download without a prompt. Existing files are never overwritten; a numbered copy such as `photo (1).jpg` is saved instead.
 - **Transfer History:** A dedicated tab powered by an asynchronous SQLite database keeps track of active, paused, completed, partially completed and failed transfers. Paired devices share only the history of transfers between the two of them.
 - **Pause & Cancel:** Pause, resume or cancel a running transfer from either side. (Resuming an interrupted transfer after a disconnect is not supported yet.)
 - **Folder Sync (planned):** A folder-watcher foundation exists, but syncing shared folders is not functional yet.
@@ -24,12 +25,17 @@
 
 ## Security
 
-- **Encrypted transport:** All traffic is encrypted with QUIC's built-in TLS 1.3.
-- **Pairing required:** Offers from unpaired devices are rejected, and nothing is written until you accept an offer. Pairing responses are only honoured for pairing requests you started, and incoming requests require the code from the other device's screen.
-- **Strict receive protocol:** The receiver enforces the order of protocol messages, the declared sizes and a per-file hash, and caps message and chunk sizes. Any violation ends the transfer.
+- **Verified device identity:** Each device has its own private key, created on first launch and never shared. Every connection uses mutual TLS 1.3 over QUIC, and both sides prove they hold their key.
+- **Key pinning at pairing:** Pairing records the other device's key. Afterwards, a device is only accepted if it holds that exact key. Someone who copies a paired device's name or ID is rejected before any file moves, and sending to an address that answers with the wrong key is refused.
+- **Pairing codes that resist interception:** The 6-digit code is computed from both devices' keys plus fresh random values exchanged in a commit-then-reveal handshake. An attacker in the middle would see different codes on each side.
+- **Strict receive protocol:** Nothing is written until you accept an offer (or turn on auto-accept). The receiver enforces the order of protocol messages, the declared sizes and a per-file hash, and caps message and chunk sizes.
 - **Path traversal protection:** Incoming names and paths are sanitized (no `..`, absolute paths or drive prefixes), and writes are refused if a symlink would redirect them outside the download folder.
 
-> **Known limitation:** device identity is not yet cryptographically verified. A device is recognised by the ID it announces, so someone on your network who copies a paired device's ID could impersonate it. Certificate pinning at pairing time is the next planned security milestone. Until then, only use ProxiShare on networks you trust. ProxiShare 1.1 uses a new protocol version and cannot exchange files with 1.0.
+### Upgrading from 1.1
+
+Devices paired with 1.1 or earlier were never key-verified, so they show as **Needs re-pairing**. Pair them again once with the code. Their transfer history is kept and stays linked to the device. ProxiShare 1.2 uses a new protocol version and cannot exchange files with 1.1.
+
+If a paired device was reinstalled (and so has a new key), it is reported as a key change. Use **Forget** on that device, then pair again.
 
 ## 📦 Getting Started
 

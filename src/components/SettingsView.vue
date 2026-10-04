@@ -96,8 +96,18 @@ const changeDownloadDir = async () => {
             </label>
           </div>
           
-          <!-- Auto-accept stays hidden until device identity is cryptographically verified:
-               with spoofable device ids it would let anyone drop files without a prompt. -->
+          <div class="h-px w-full bg-white/5"></div>
+          
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <label class="text-body-md font-medium text-on-surface block">Auto-accept from Paired Devices</label>
+              <p class="text-body-sm text-on-surface-variant mt-1">Files from verified paired devices download without a prompt. Existing files are never overwritten; a numbered copy is saved instead.</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" v-model="settings.auto_accept" @change="saveSettings" class="sr-only peer">
+              <div class="w-11 h-6 bg-surface-bright peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+            </label>
+          </div>
         </div>
       </section>
 

@@ -3,7 +3,11 @@ use crate::transfer::protocol::{
     MAX_CHUNK_SIZE,
 };
 use crate::transfer::sender::TransferProgress;
-use crate::transfer::session::{resolve_destination, FileVerdict, Phase, ReceiveSession};
+use crate::crypto::security::PeerTrust;
+use crate::pairing::{commitment, new_nonce, pairing_code, Decision, PairParty, PAIRING_TTL};
+use crate::transfer::session::{
+    resolve_destination, unique_name, FileVerdict, Phase, ReceiveSession,
+};
 use crate::TransferStatus;
 use quinn::{Connection, RecvStream, SendStream};
 use std::path::{Path, PathBuf};
@@ -12,7 +16,7 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 /// How long to wait for the user to accept or decline (the sender gives up at 300s).
 const DECISION_TIMEOUT: Duration = Duration::from_secs(310);
@@ -54,6 +58,10 @@ pub struct FileReceiver {
     renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
     settings: Arc<RwLock<crate::settings::SettingsManager>>,
     pairing: Arc<RwLock<crate::pairing::PairingState>>,
+    /// Fingerprint of our own key.
+    my_fingerprint: String,
+    /// Fingerprint of the key the peer proved it holds in the handshake.
+    peer_fingerprint: String,
 }
 
 impl FileReceiver {
@@ -68,8 +76,10 @@ impl FileReceiver {
         renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
         settings: Arc<RwLock<crate::settings::SettingsManager>>,
         pairing: Arc<RwLock<crate::pairing::PairingState>>,
-    ) -> Self {
-        Self {
+        my_fingerprint: String,
+    ) -> Result<Self, crate::GenericError> {
+        let peer_fingerprint = crate::crypto::encryption::peer_fingerprint(&connection)?;
+        Ok(Self {
             save_directory,
             connection,
             app_handle,
@@ -79,7 +89,16 @@ impl FileReceiver {
             renames,
             settings,
             pairing,
-        }
+            my_fingerprint,
+            peer_fingerprint,
+        })
+    }
+
+    async fn peer_trust(&self, device_id: &str) -> PeerTrust {
+        self.security
+            .read()
+            .await
+            .verify_peer(device_id, &self.peer_fingerprint)
     }
 
     fn check_disk_space(&self, required_bytes: u64) -> Result<(), crate::GenericError> {
@@ -108,18 +127,16 @@ impl FileReceiver {
             MessageType::PairRequest {
                 device_id,
                 device_name,
-                pairing_code,
+                commitment,
             } => {
-                self.handle_pair_request(device_id, device_name, pairing_code)
-                    .await
-            }
-            MessageType::PairResponse {
-                accepted,
-                device_id,
-                device_name,
-            } => {
-                self.handle_pair_response(accepted, device_id, device_name)
-                    .await
+                self.handle_pair_request(
+                    send_stream,
+                    recv_stream,
+                    device_id,
+                    device_name,
+                    commitment,
+                )
+                .await
             }
             MessageType::HistorySync { sender_id, records } => {
                 self.handle_history_sync(sender_id, records).await
@@ -162,17 +179,36 @@ impl FileReceiver {
         )
         .await?;
 
-        // Make the caller visible to us too, without letting it overwrite a device we already know.
+        // Make the caller visible to us too. A paired device that proves its key
+        // may update its address; anyone else may only add an id we don't know yet.
+        let verified = self.peer_trust(&device_id).await == PeerTrust::Verified;
+        if verified {
+            self.security
+                .write()
+                .await
+                .update_address(&device_id, &self.remote_ip(), crate::APP_PORT);
+        }
         if let Some(state) = self.app_handle.try_state::<crate::AppState>() {
             if let Some(discovery) = state.discovery.read().await.as_ref() {
-                discovery
-                    .add_if_unknown(
-                        device_id.clone(),
-                        device_name.clone(),
-                        self.remote_ip(),
-                        crate::APP_PORT,
-                    )
-                    .await;
+                if verified {
+                    discovery
+                        .add_manual_device(
+                            device_id.clone(),
+                            device_name.clone(),
+                            self.remote_ip(),
+                            crate::APP_PORT,
+                        )
+                        .await;
+                } else {
+                    discovery
+                        .add_if_unknown(
+                            device_id.clone(),
+                            device_name.clone(),
+                            self.remote_ip(),
+                            crate::APP_PORT,
+                        )
+                        .await;
+                }
             }
         }
 
@@ -187,86 +223,190 @@ impl FileReceiver {
         Ok(())
     }
 
+    /// Responder side of pairing. Keeps the stream open until our user types
+    /// the code shown on the other device, declines, or the request expires.
     async fn handle_pair_request(
         &self,
+        mut send_stream: SendStream,
+        mut recv_stream: RecvStream,
         device_id: String,
         device_name: String,
-        pairing_code: String,
+        their_commitment: [u8; 32],
     ) -> Result<(), crate::GenericError> {
-        if !crate::discovery::mdns::is_valid_device_id(&device_id)
-            || pairing_code.len() != 6
-            || !pairing_code.chars().all(|c| c.is_ascii_digit())
-        {
+        if !crate::discovery::mdns::is_valid_device_id(&device_id) {
             return Err("Malformed pairing request".into());
         }
+        if let Err(reason) = self
+            .security
+            .read()
+            .await
+            .can_pair(&device_id, &self.peer_fingerprint)
+        {
+            self.send_pair_result(&mut send_stream, false, reason).await;
+            return Err(reason.into());
+        }
+
+        let my_id = self.security.read().await.get_device_id().to_string();
+        let my_name = self.settings.read().await.get_settings().device_name;
+        let my_nonce = new_nonce();
+        write_message(
+            &mut send_stream,
+            &MessageType::PairChallenge {
+                device_id: my_id.clone(),
+                device_name: my_name,
+                nonce: my_nonce,
+            },
+        )
+        .await?;
+
+        let their_nonce = match tokio::time::timeout(
+            Duration::from_secs(30),
+            read_message(&mut recv_stream),
+        )
+        .await
+        {
+            Ok(Ok(MessageType::PairReveal { nonce })) => nonce,
+            Ok(Ok(_)) => return Err("Protocol violation: expected PairReveal".into()),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Err("Pairing request timed out".into()),
+        };
+        if commitment(&their_nonce) != their_commitment {
+            return Err("Pairing nonce does not match its commitment".into());
+        }
+
+        let code = pairing_code(
+            &PairParty {
+                device_id: &device_id,
+                fingerprint: &self.peer_fingerprint,
+            },
+            &PairParty {
+                device_id: &my_id,
+                fingerprint: &self.my_fingerprint,
+            },
+            &their_nonce,
+            &my_nonce,
+        );
 
         let ip = self.remote_ip();
         let port = self.connection.remote_address().port();
+        let (decision_tx, decision_rx) = oneshot::channel::<Decision>();
         let added = self.pairing.write().await.add_incoming(
             &device_id,
             &device_name,
             &ip,
             port,
-            &pairing_code,
+            &code,
+            decision_tx,
+        );
+        if !added {
+            self.send_pair_result(&mut send_stream, false, "A pairing request from this device is already open")
+                .await;
+            return Err("Duplicate pairing request".into());
+        }
+
+        // The code is never sent to the UI: the user must type what the other screen shows.
+        let _ = self.app_handle.emit(
+            "pairing-request",
+            serde_json::json!({ "device": { "id": device_id, "name": device_name } }),
         );
 
-        if added {
-            // The code stays in the backend: the user must type what the other screen shows.
+        let cancelled = |reason: &str| {
             let _ = self.app_handle.emit(
-                "pairing-request",
-                serde_json::json!({
-                    "device": { "id": device_id, "name": device_name },
-                }),
+                "pairing-cancelled",
+                serde_json::json!({ "deviceId": device_id, "reason": reason }),
             );
-        } else {
-            println!(
-                "[Pairing] Ignoring duplicate pairing request for {}",
-                device_id
-            );
+        };
+
+        tokio::select! {
+            decision = decision_rx => match decision {
+                Ok(Decision { accepted: true, done }) => {
+                    let result = self
+                        .complete_pairing(&mut send_stream, &mut recv_stream, &device_id, &device_name, &ip, port)
+                        .await;
+                    let _ = done.send(result.clone());
+                    result.map_err(|e| e.into())
+                }
+                Ok(Decision { accepted: false, done }) => {
+                    self.send_pair_result(&mut send_stream, false, "Pairing was declined").await;
+                    let _ = done.send(Ok(()));
+                    Ok(())
+                }
+                Err(_) => {
+                    // Too many wrong codes, or the request expired.
+                    self.send_pair_result(&mut send_stream, false, "The pairing code was not confirmed").await;
+                    cancelled("The pairing code was not confirmed");
+                    Ok(())
+                }
+            },
+            _ = read_message(&mut recv_stream) => {
+                // The other side only speaks again after our result, so anything
+                // here (usually the stream closing) means it gave up.
+                self.pairing.write().await.remove_incoming(&device_id);
+                cancelled("The other device cancelled pairing");
+                Ok(())
+            }
+            _ = tokio::time::sleep(PAIRING_TTL) => {
+                self.pairing.write().await.remove_incoming(&device_id);
+                self.send_pair_result(&mut send_stream, false, "Pairing timed out").await;
+                cancelled("Pairing timed out");
+                Ok(())
+            }
         }
+    }
+
+    /// Our user typed the right code: tell the initiator, wait until it has
+    /// stored the pairing, then pin its key on our side too.
+    async fn complete_pairing(
+        &self,
+        send_stream: &mut SendStream,
+        recv_stream: &mut RecvStream,
+        device_id: &str,
+        device_name: &str,
+        ip: &str,
+        port: u16,
+    ) -> Result<(), String> {
+        write_message(
+            send_stream,
+            &MessageType::PairResult {
+                accepted: true,
+                reason: String::new(),
+            },
+        )
+        .await
+        .map_err(|e| format!("The other device is no longer reachable: {}", e))?;
+
+        match tokio::time::timeout(Duration::from_secs(10), read_message(recv_stream)).await {
+            Ok(Ok(MessageType::PairConfirmed)) => {}
+            _ => return Err("The other device did not confirm the pairing".to_string()),
+        }
+
+        let mut security = self.security.write().await;
+        security.can_pair(device_id, &self.peer_fingerprint)?;
+        security
+            .add_trusted(crate::crypto::security::TrustedDevice {
+                id: device_id.to_string(),
+                name: device_name.to_string(),
+                last_ip: ip.to_string(),
+                last_port: port,
+                last_seen: chrono::Utc::now().timestamp(),
+                fingerprint: Some(self.peer_fingerprint.clone()),
+            })
+            .map_err(|e| e.to_string())?;
+        println!("[Pairing] Device {} is now trusted", device_id);
         Ok(())
     }
 
-    async fn handle_pair_response(
-        &self,
-        accepted: bool,
-        device_id: String,
-        device_name: String,
-    ) -> Result<(), crate::GenericError> {
-        let ip = self.remote_ip();
-        if !self.pairing.write().await.take_response(&device_id, &ip) {
-            return Err(format!(
-                "Ignoring unsolicited pairing response from {} ({})",
-                device_id, ip
-            )
-            .into());
-        }
-
-        if accepted {
-            let trusted_device = crate::crypto::security::TrustedDevice {
-                id: device_id.clone(),
-                name: device_name.clone(),
-                last_ip: ip,
-                last_port: self.connection.remote_address().port(),
-                last_seen: chrono::Utc::now().timestamp(),
-            };
-            self.security
-                .write()
-                .await
-                .add_trusted(trusted_device)
-                .map_err(|e| e.to_string())?;
-            println!("[Pairing] Device {} is now trusted", device_id);
-        }
-
-        let _ = self.app_handle.emit(
-            "pairing-result",
-            serde_json::json!({
-                "deviceId": device_id,
-                "deviceName": device_name,
-                "accepted": accepted,
-            }),
-        );
-        Ok(())
+    async fn send_pair_result(&self, send_stream: &mut SendStream, accepted: bool, reason: &str) {
+        let _ = write_message(
+            send_stream,
+            &MessageType::PairResult {
+                accepted,
+                reason: reason.to_string(),
+            },
+        )
+        .await;
+        let _ = send_stream.finish();
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
     async fn handle_history_sync(
@@ -274,8 +414,8 @@ impl FileReceiver {
         sender_id: String,
         records: Vec<SyncedTransfer>,
     ) -> Result<(), crate::GenericError> {
-        if !self.security.read().await.is_trusted(&sender_id) {
-            return Err("Ignoring history from an untrusted device".into());
+        if self.peer_trust(&sender_id).await != PeerTrust::Verified {
+            return Err("Ignoring history from an unverified device".into());
         }
 
         println!(
@@ -316,14 +456,15 @@ impl FileReceiver {
         sender_id: String,
         sender_name: String,
     ) -> Result<(), crate::GenericError> {
-        if !self.security.read().await.is_trusted(&sender_id) {
+        let trust = self.peer_trust(&sender_id).await;
+        if trust != PeerTrust::Verified {
             println!(
-                "[Receiver] Rejecting offer from untrusted sender: {}",
-                sender_id
+                "[Receiver] Rejecting offer from {}: {:?}",
+                sender_id, trust
             );
-            self.reject_offer(&mut send_stream, &transfer_id, "Device not trusted")
+            self.reject_offer(&mut send_stream, &transfer_id, trust.rejection())
                 .await;
-            return Err("Untrusted device".into());
+            return Err(trust.rejection().into());
         }
 
         let mut session = ReceiveSession::new();
@@ -331,6 +472,16 @@ impl FileReceiver {
             self.reject_offer(&mut send_stream, &transfer_id, &e.to_string())
                 .await;
             return Err(e.into());
+        }
+
+        // Auto-accept only ever applies to verified devices, and never overwrites.
+        let auto_accept = self.settings.read().await.get_settings().auto_accept;
+        if auto_accept {
+            let name = session.offer().unwrap().name.clone();
+            let free_name = unique_name(&self.save_directory, &name);
+            if free_name != name {
+                session.rename(&free_name)?;
+            }
         }
         if self.check_disk_space(metadata.size).is_err() {
             self.reject_offer(
@@ -350,11 +501,17 @@ impl FileReceiver {
                     .await;
                 return Err("Duplicate transfer id".into());
             }
-            registry.insert(transfer_id.clone(), TransferStatus::Pending);
+            // Auto-accepted offers start as accepted; the transfer loop picks that up.
+            let initial = if auto_accept {
+                TransferStatus::InProgress
+            } else {
+                TransferStatus::Pending
+            };
+            registry.insert(transfer_id.clone(), initial);
         }
 
         let result = self
-            .run_session(send_stream, recv_stream, session, sender_name, &metadata)
+            .run_session(send_stream, recv_stream, session, sender_name, &metadata, auto_accept)
             .await;
 
         self.transfers.write().await.remove(&transfer_id);
@@ -369,6 +526,7 @@ impl FileReceiver {
         session: ReceiveSession,
         sender_name: String,
         metadata: &FileMetadata,
+        auto_accepted: bool,
     ) -> Result<(), crate::GenericError> {
         let offer = session.offer().cloned().expect("offer validated");
         let path = self.save_directory.join(&offer.name);
@@ -392,10 +550,21 @@ impl FileReceiver {
             }
         }
 
-        // Ask the user
-        let _ = self.app_handle.emit(
-            "file-offer-received",
-            serde_json::json!({
+        if auto_accepted {
+            let _ = self.app_handle.emit(
+                "file-auto-accepted",
+                serde_json::json!({
+                    "transferId": offer.transfer_id,
+                    "fileName": offer.name,
+                    "senderId": offer.sender_id,
+                    "senderName": sender_name,
+                }),
+            );
+        } else {
+            // Ask the user
+            let _ = self.app_handle.emit(
+                "file-offer-received",
+                serde_json::json!({
                 "transferId": offer.transfer_id,
                 "fileName": offer.name,
                 "fileSize": offer.total_size,
@@ -407,7 +576,8 @@ impl FileReceiver {
                 "topExtensions": metadata.top_extensions,
                 "fileExists": path.exists(),
             }),
-        );
+            );
+        }
 
         let (tx, mut rx) = mpsc::channel(4);
         let reader = tokio::spawn(read_loop(recv_stream, tx));
@@ -543,7 +713,7 @@ impl FileReceiver {
                     let _ = db.update_status_only(&transfer_id, "in_progress").await;
                 }
 
-                println!("[Receiver] User accepted file. Sending FileAccept...");
+                println!("[Receiver] Offer accepted. Sending FileAccept...");
                 write_message(send_stream, &MessageType::FileAccept { transfer_id }).await?;
                 self.emit_progress(st, "in_progress");
                 Ok(None)

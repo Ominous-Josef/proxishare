@@ -8,6 +8,8 @@ export interface Device {
   all_ips: string[];
   port: number;
   last_seen: number;
+  /** Pairing state from the backend. "needs_repair": paired before keys were verified. */
+  trust: "paired" | "needs_repair" | "none";
   isTrusted?: boolean;
   isReachable?: boolean;
 }
@@ -49,11 +51,9 @@ export function useDevices() {
   const fetchDevices = async () => {
     try {
       const result = await invoke<Device[]>("get_discovered_devices");
-      // Check trust status and connectivity concurrently for all devices
+      // Check connectivity concurrently for all devices
       await Promise.all(result.map(async (device) => {
-        device.isTrusted = await invoke("is_device_trusted", {
-          deviceId: device.id,
-        });
+        device.isTrusted = device.trust === "paired";
         // Test connectivity to primary IP
         device.isReachable = await testConnectivity(device.ip, device.port);
       }));

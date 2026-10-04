@@ -278,8 +278,9 @@ onUnmounted(() => {
           
           <!-- Actions -->
           <div class="flex items-center gap-2 z-10 shrink-0">
+            <span v-if="device.trust === 'needs_repair'" class="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-warning/10 text-warning border border-warning/20 shrink-0" title="Paired with an older version. Pair again to verify this device.">Needs re-pairing</span>
             <AppButton v-if="!device.isTrusted" @click.stop="emit('pair', device.id)" size="sm" variant="outline" class="shrink-0 text-primary border-primary/30 hover:bg-primary/10">
-              Pair
+              {{ device.trust === 'needs_repair' ? 'Re-pair' : 'Pair' }}
             </AppButton>
             <ChevronRight class="w-6 h-6 text-on-surface-variant/40 group-hover:text-primary transition-colors ml-2" />
           </div>

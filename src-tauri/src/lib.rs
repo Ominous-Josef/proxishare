@@ -66,37 +66,66 @@ async fn start_discovery(state: tauri::State<'_, AppState>) -> Result<bool, Stri
 #[tauri::command]
 async fn add_device_manually(ip: String, state: tauri::State<'_, AppState>) -> Result<bool, String> {
     let port = APP_PORT;
+    let tm = state
+        .transfer
+        .read()
+        .await
+        .clone()
+        .ok_or("Transfer manager not initialized")?;
 
-    // Get our device info
-    let my_id = state.security.read().await.get_device_id().to_string();
-    let my_name = state.settings.read().await.get_settings().device_name.clone();
-
-    // Get transfer manager to ping the device
-    let transfer = state.transfer.read().await.clone();
-    if let Some(tm) = transfer {
-        match tm.ping_device(&ip, port, my_id, my_name).await {
-            Ok((device_id, _)) if !crate::discovery::mdns::is_valid_device_id(&device_id) => {
-                return Err(format!("{} answered with an invalid device id", ip));
-            }
-            Ok((device_id, device_name)) => {
-                // If ping succeeds, inject it into discovery
-                if let Some(discovery) = state.discovery.read().await.as_ref() {
-                    discovery.add_manual_device(device_id.clone(), device_name.clone(), ip.clone(), port).await;
-                    println!("[mDNS] Manually added device: {} ({}) at {}", device_name, device_id, ip);
-                    return Ok(true);
-                }
-            },
-            Err(e) => {
-                println!("[mDNS] Failed to connect manually to {}: {:?}", ip, e);
-                return Err(format!("Could not connect to {}: {:?}", ip, e));
-            }
-        }
+    let reply = tm.ping_device(&ip, port).await.map_err(|e| {
+        println!("[mDNS] Failed to connect manually to {}: {:?}", ip, e);
+        format!("Could not connect to {}: {}", ip, e)
+    })?;
+    if !crate::discovery::mdns::is_valid_device_id(&reply.device_id) {
+        return Err(format!("{} answered with an invalid device id", ip));
     }
-    Err("Transfer manager not initialized".to_string())
+    // A paired device must answer with its pinned key, or it isn't that device.
+    if state
+        .security
+        .read()
+        .await
+        .pinned_fingerprint(&reply.device_id)
+        .is_some_and(|pinned| pinned != reply.fingerprint)
+    {
+        return Err(format!(
+            "{} claims to be a paired device but holds a different key",
+            ip
+        ));
+    }
+
+    if let Some(discovery) = state.discovery.read().await.as_ref() {
+        discovery
+            .add_manual_device(reply.device_id.clone(), reply.device_name.clone(), ip.clone(), port)
+            .await;
+        println!(
+            "[mDNS] Manually added device: {} ({}) at {}",
+            reply.device_name, reply.device_id, ip
+        );
+    }
+    Ok(true)
+}
+
+/// A device as the UI sees it: discovery data plus its pairing state.
+#[derive(serde::Serialize)]
+struct DeviceView {
+    #[serde(flatten)]
+    device: Device,
+    /// "paired", "needs_repair" or "none".
+    trust: &'static str,
+}
+
+fn trust_label(trust: crate::crypto::security::PeerTrust) -> &'static str {
+    use crate::crypto::security::PeerTrust;
+    match trust {
+        PeerTrust::Verified => "paired",
+        PeerTrust::NeedsRepair => "needs_repair",
+        PeerTrust::KeyMismatch | PeerTrust::Unknown => "none",
+    }
 }
 
 #[tauri::command]
-async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec<Device>, String> {
+async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceView>, String> {
     let mut devices = if let Some(ds) = state.discovery.read().await.as_ref() {
         ds.get_devices().await
     } else {
@@ -119,7 +148,13 @@ async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec
         }
     }
 
-    Ok(devices)
+    Ok(devices
+        .into_iter()
+        .map(|device| DeviceView {
+            trust: trust_label(security.pairing_state(&device.id)),
+            device,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -250,7 +285,20 @@ async fn is_device_trusted(
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, String> {
     let security = state.security.read().await;
-    Ok(security.is_trusted(&device_id))
+    Ok(security.pairing_state(&device_id) == crate::crypto::security::PeerTrust::Verified)
+}
+
+/// Removes a pairing. History with the device is kept.
+#[tauri::command]
+async fn forget_device(device_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state
+        .security
+        .write()
+        .await
+        .remove_trusted(&device_id)
+        .map_err(|e| e.to_string())?;
+    println!("[Pairing] Forgot device {}", device_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -260,24 +308,10 @@ async fn test_device_connectivity(
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, String> {
     let tm = state.transfer.read().await.clone();
-    if let Some(tm) = tm {
-        let security = state.security.read().await;
-        let my_id = security.get_device_id().clone();
-        drop(security);
-        
-        let settings = state.settings.read().await;
-        let my_name = settings.get_settings().device_name;
-        drop(settings);
-
-        match tm.ping_device(&ip, port, my_id, my_name).await {
-            Ok(_) => Ok(true),
-            Err(_) => {
-                // Silently return false to prevent terminal spam during 15s background polling
-                Ok(false)
-            }
-        }
-    } else {
-        Ok(false)
+    match tm {
+        // Errors are expected during the 15s background polling; just report unreachable.
+        Some(tm) => Ok(tm.ping_device(&ip, port).await.is_ok()),
+        None => Ok(false),
     }
 }
 
@@ -296,26 +330,15 @@ async fn find_reachable_device_ip(
 ) -> Result<Option<String>, String> {
     let discovery = state.discovery.read().await.clone();
     let tm = state.transfer.read().await.clone();
-    
+
     if let (Some(ds), Some(tm)) = (discovery, tm) {
         let devices = ds.get_devices().await;
         if let Some(device) = devices.iter().find(|d| d.id == device_id) {
-            let security = state.security.read().await;
-            let my_id = security.get_device_id().clone();
-            drop(security);
-            
-            let settings = state.settings.read().await;
-            let my_name = settings.get_settings().device_name;
-            drop(settings);
-            
-            // Try primary IP
-            if tm.ping_device(&device.ip, device.port, my_id.clone(), my_name.clone()).await.is_ok() {
-                return Ok(Some(device.ip.clone()));
-            }
-            
-            // Try other IPs
-            for ip in &device.all_ips {
-                if ip != &device.ip && tm.ping_device(ip, device.port, my_id.clone(), my_name.clone()).await.is_ok() {
+            // Primary IP first, then the others; the device must answer with its own key.
+            let candidates = std::iter::once(&device.ip)
+                .chain(device.all_ips.iter().filter(|ip| *ip != &device.ip));
+            for ip in candidates {
+                if tm.ping_matches(&device_id, ip, device.port).await {
                     return Ok(Some(ip.clone()));
                 }
             }
@@ -348,6 +371,8 @@ fn get_local_network_interfaces() -> Vec<NetworkInterface> {
     get_network_interfaces()
 }
 
+/// Starts pairing with a device. Returns the code to show; the other user must
+/// type it. The pairing finishes in the background and emits `pairing-result`.
 #[tauri::command]
 async fn request_pairing(
     state: tauri::State<'_, AppState>,
@@ -355,35 +380,35 @@ async fn request_pairing(
     ip: String,
     port: u16,
 ) -> Result<String, String> {
-    // Generate a random 6-digit pairing code. The other user has to type it in,
-    // which proves they can see this screen.
-    let pairing_code = {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        format!("{:06}", rng.gen_range(0..1_000_000))
-    };
+    let tm = state
+        .transfer
+        .read()
+        .await
+        .clone()
+        .ok_or("Transfer manager not initialized")?;
 
-    let my_id = state.security.read().await.get_device_id().to_string();
-    let my_name = state.settings.read().await.get_settings().device_name;
+    let (code, pairing) = tm
+        .start_pairing(&device_id, &ip, port)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    // Only a response to a request we actually made will be trusted.
-    state.pairing.write().await.expect_response(&device_id, &ip);
+    let task = tauri::async_runtime::spawn(async move {
+        tm.finish_pairing(pairing).await;
+    });
+    state
+        .pairing
+        .write()
+        .await
+        .add_outgoing(&device_id, task.inner().abort_handle());
 
-    let tm_opt = state.transfer.read().await.clone();
-    let tm = tm_opt.ok_or("Transfer manager not initialized")?;
-    tm.send_message(
-        ip.clone(),
-        port,
-        crate::transfer::protocol::MessageType::PairRequest {
-            device_id: my_id,
-            device_name: my_name,
-            pairing_code: pairing_code.clone(),
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    Ok(code)
+}
 
-    Ok(pairing_code)
+/// Cancels a pairing we started (the user closed the code dialog).
+#[tauri::command]
+async fn cancel_pairing(device_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.pairing.write().await.cancel_outgoing(&device_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -483,7 +508,6 @@ async fn accept_pairing(
     code: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    // Address and name come from the stored request, never from the frontend.
     let pending = state
         .pairing
         .write()
@@ -492,72 +516,43 @@ async fn accept_pairing(
         .map_err(|e| e.to_string())?;
 
     println!(
-        "[Pairing] Accepting pairing for device: {} at {}:{}",
+        "[Pairing] Code confirmed for device {} at {}:{}",
         device_id, pending.ip, pending.port
     );
-    let my_name = state.settings.read().await.get_settings().device_name;
 
-    let mut security = state.security.write().await;
-    let trusted_device = crate::crypto::security::TrustedDevice {
-        id: device_id.clone(),
-        name: pending.name.clone(),
-        last_ip: pending.ip.clone(),
-        last_port: pending.port,
-        last_seen: chrono::Utc::now().timestamp(),
-    };
-    security
-        .add_trusted(trusted_device)
-        .map_err(|e| e.to_string())?;
-    println!("[Pairing] Device {} is now trusted", device_id);
-    let my_id = security.get_device_id().clone();
-    drop(security);
+    // Hand the decision to the task holding the pairing stream and wait for it
+    // to finish the handshake (it pins the key once the other side confirms).
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    pending
+        .responder
+        .send(crate::pairing::Decision {
+            accepted: true,
+            done: done_tx,
+        })
+        .map_err(|_| "The pairing request is no longer open".to_string())?;
 
-    // Send PairResponse to the device
-    let tm_opt = state.transfer.read().await.clone();
-    if let Some(tm) = tm_opt {
-        let _ = tm
-            .send_message(
-                pending.ip.clone(),
-                pending.port,
-                crate::transfer::protocol::MessageType::PairResponse {
-                    accepted: true,
-                    device_id: my_id,
-                    device_name: my_name,
-                },
-            )
-            .await;
+    match tokio::time::timeout(std::time::Duration::from_secs(20), done_rx).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(e))) => return Err(e),
+        _ => return Err("Pairing did not complete".to_string()),
     }
 
-    if let Err(e) = push_history(&state, &device_id, pending.ip, pending.port).await {
+    if let Err(e) = push_history(&state, &device_id, pending.ip, APP_PORT).await {
         println!("[Sync] History sync after pairing failed: {}", e);
     }
-
     Ok(())
 }
 
 #[tauri::command]
 async fn reject_pairing(device_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     println!("[Pairing] Rejecting pairing for device: {}", device_id);
-    let Some(pending) = state.pairing.write().await.remove_incoming(&device_id) else {
-        return Ok(());
-    };
-
-    let my_id = state.security.read().await.get_device_id().to_string();
-    let tm_opt = state.transfer.read().await.clone();
-    if let Some(tm) = tm_opt {
-        let _ = tm
-            .send_message(
-                pending.ip,
-                pending.port,
-                crate::transfer::protocol::MessageType::PairResponse {
-                    accepted: false,
-                    device_id: my_id,
-                    device_name: String::new(),
-                },
-            )
-            .await;
+    if let Some(pending) = state.pairing.write().await.remove_incoming(&device_id) {
+        let (done_tx, _done_rx) = tokio::sync::oneshot::channel();
+        let _ = pending.responder.send(crate::pairing::Decision {
+            accepted: false,
+            done: done_tx,
+        });
     }
-
     Ok(())
 }
 
@@ -568,7 +563,9 @@ async fn push_history(
     ip: String,
     port: u16,
 ) -> Result<(), String> {
-    if !state.security.read().await.is_trusted(device_id) {
+    if state.security.read().await.pairing_state(device_id)
+        != crate::crypto::security::PeerTrust::Verified
+    {
         return Err("Device is not paired".to_string());
     }
     println!(
@@ -594,8 +591,9 @@ async fn push_history(
         .await
         .clone()
         .ok_or("Transfer manager not initialized")?;
-    tm.send_message(
-        ip,
+    tm.send_verified_message(
+        device_id,
+        &ip,
         port,
         crate::transfer::protocol::MessageType::HistorySync { sender_id, records },
     )
@@ -697,13 +695,8 @@ async fn update_settings(
 }
 
 /// Drops devices that haven't been seen for a while, unless they still answer
-/// a QUIC ping (the app listens on UDP, so a TCP probe would always fail).
-fn spawn_stale_device_cleanup(
-    discovery: Arc<DiscoveryService>,
-    tm: Arc<TransferManager>,
-    my_id: String,
-    my_name: String,
-) {
+/// a QUIC ping as themselves (with their pinned key, when paired).
+fn spawn_stale_device_cleanup(discovery: Arc<DiscoveryService>, tm: Arc<TransferManager>) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
@@ -711,16 +704,37 @@ fn spawn_stale_device_cleanup(
                 .stale_devices(crate::discovery::mdns::DEVICE_TIMEOUT_SECS)
                 .await;
             for (id, ip, port) in stale {
-                match tm.ping_device(&ip, port, my_id.clone(), my_name.clone()).await {
-                    Ok((answered_id, _)) if answered_id == id => discovery.touch(&id).await,
-                    _ => {
-                        println!("[mDNS] Removing stale device: {}", id);
-                        discovery.remove(&id).await;
-                    }
+                if tm.ping_matches(&id, &ip, port).await {
+                    discovery.touch(&id).await;
+                } else {
+                    println!("[mDNS] Removing stale device: {}", id);
+                    discovery.remove(&id).await;
                 }
             }
         }
     });
+}
+
+/// Loads this device's key. If the key file is damaged, it is set aside and a
+/// new key is made: paired devices will then report a key change and need to
+/// forget and re-pair this device, which beats refusing to start.
+fn load_identity(
+    app_data_dir: &std::path::Path,
+) -> Result<crate::crypto::encryption::DeviceIdentity, Box<dyn std::error::Error>> {
+    use crate::crypto::encryption::DeviceIdentity;
+    match DeviceIdentity::load_or_create(app_data_dir) {
+        Ok(identity) => Ok(identity),
+        Err(e) => {
+            println!("[Identity] {}. Creating a new device key.", e);
+            let key_path = app_data_dir.join("identity.key");
+            let backup = app_data_dir.join(format!(
+                "identity.key.damaged-{}",
+                chrono::Utc::now().timestamp()
+            ));
+            std::fs::rename(&key_path, &backup)?;
+            DeviceIdentity::load_or_create(app_data_dir).map_err(|e| e as Box<dyn std::error::Error>)
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -797,6 +811,8 @@ pub fn run() {
 
             let renames = Arc::new(RwLock::new(HashMap::new()));
             let pairing = Arc::new(RwLock::new(pairing::PairingState::default()));
+            let identity = load_identity(&app_data_dir)?;
+            println!("[Identity] Device key fingerprint: {}", identity.fingerprint);
 
             println!("Initializing services with block_on");
             let (discovery, transfer_manager) = tauri::async_runtime::block_on(async {
@@ -805,6 +821,7 @@ pub fn run() {
                 let port = APP_PORT;
                 let tm = TransferManager::new(
                     port,
+                    &identity,
                     app_handle.clone(),
                     database.clone(),
                     transfers.clone(),
@@ -842,12 +859,7 @@ pub fn run() {
             if let Err(e) = discovery.start_discovery() {
                 println!("Error starting discovery: {:?}", e);
             }
-            spawn_stale_device_cleanup(
-                discovery.clone(),
-                transfer_manager.clone(),
-                device_id.clone(),
-                device_name.clone(),
-            );
+            spawn_stale_device_cleanup(discovery.clone(), transfer_manager.clone());
             
             let app_state = AppState {
                 discovery: Arc::new(RwLock::new(Some(discovery))),
@@ -880,8 +892,10 @@ pub fn run() {
             get_network_diagnostics,
             get_local_network_interfaces,
             request_pairing,
+            cancel_pairing,
             accept_pairing,
             reject_pairing,
+            forget_device,
             set_sync_folder,
             get_sync_status,
             get_transfer_history,

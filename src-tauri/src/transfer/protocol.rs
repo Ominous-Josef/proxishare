@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Wire protocol version. Bump whenever `MessageType` or framing changes in a
-/// way older builds can't understand. v1 (ProxiShare 1.0.0) had no version byte.
-pub const PROTOCOL_VERSION: u8 = 2;
+/// way older builds can't understand. v1 (ProxiShare 1.0.0) had no version byte,
+/// v2 was 1.1.0, v3 (1.2.0) added key-bound pairing.
+pub const PROTOCOL_VERSION: u8 = 3;
 
 /// Upper bound for a single framed message (manifests for large folders are the biggest).
 pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
@@ -131,17 +132,32 @@ pub enum MessageType {
         transfer_id: String,
     },
 
-    // Pairing
+    // Pairing: one stream, commit-then-reveal. The initiator (A) commits to its
+    // nonce before seeing the responder's (B) nonce, so neither side can steer
+    // the resulting code. See `crate::pairing` for the code derivation.
+    /// A -> B
     PairRequest {
         device_id: String,
         device_name: String,
-        pairing_code: String,
+        commitment: [u8; 32],
     },
-    PairResponse {
-        accepted: bool,
+    /// B -> A
+    PairChallenge {
         device_id: String,
         device_name: String,
+        nonce: [u8; 32],
     },
+    /// A -> B: reveals the nonce behind `commitment`.
+    PairReveal {
+        nonce: [u8; 32],
+    },
+    /// B -> A, once B's user has typed the code (or declined).
+    PairResult {
+        accepted: bool,
+        reason: String,
+    },
+    /// A -> B: A has stored the pairing, so B can store it too.
+    PairConfirmed,
 
     // History shared between paired devices
     HistorySync {

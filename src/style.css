@@ -31,6 +31,7 @@
   --outline-variant: #cac4d0;
   
   --success: #10b981;
+  --warning: #b45309;
   --danger: #ef4444;
   --error-container: #f9dedc;
 }
@@ -66,6 +67,7 @@
   --outline-variant: #494454;
   
   --success: #10b981;
+  --warning: #f59e0b;
   --danger: #ef4444;
   --error-container: #93000a;
 }
@@ -100,6 +102,7 @@
   --color-outline-variant: var(--outline-variant);
   
   --color-success: var(--success);
+  --color-warning: var(--warning);
   --color-danger: var(--danger);
   --color-error-container: var(--error-container);
   
