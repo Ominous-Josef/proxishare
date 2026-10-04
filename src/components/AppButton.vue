@@ -22,7 +22,7 @@ const props = defineProps({
   }
 });
 
-const baseClasses = 'inline-flex items-center justify-center transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed tracking-wide';
+const baseClasses = 'inline-flex items-center gap-2 cursor-pointer justify-center transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed tracking-wide';
 
 const sizeClasses = computed(() => {
   switch (props.size) {

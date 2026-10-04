@@ -20,7 +20,7 @@ import {
   useFileTransfer,
 } from "../composables/useFileTransfer";
 import { useToast } from "../composables/useToast";
-import { DateTime } from "luxon";
+import { formatTransferDate } from "../utils/time";
 
 const props = defineProps<{
   deviceId?: string | null;
@@ -68,17 +68,6 @@ onMounted(async () => {
     unlisten();
   });
 });
-
-const formatDate = (timestamp: number) => {
-  const dt = DateTime.fromSeconds(timestamp);
-  const now = DateTime.now();
-
-  if (now.diff(dt, "days").days > 3) {
-    return dt.toLocaleString(DateTime.DATE_MED);
-  }
-  
-  return dt.toRelative() || dt.toLocaleString(DateTime.DATE_MED);
-};
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return "0 B";
@@ -177,7 +166,7 @@ const handleClearHistory = async () => {
             <div class="flex items-center gap-2 text-xs text-on-surface-variant/70 mt-1">
               <span class="font-medium text-on-surface-variant">{{ formatBytes(record.total_size) }}</span>
               <span class="w-1 h-1 rounded-full bg-outline-variant/50"></span>
-              <span>{{ formatDate(record.created_at) }}</span>
+              <span>{{ formatTransferDate(record.created_at) }}</span>
             </div>
           </div>
 

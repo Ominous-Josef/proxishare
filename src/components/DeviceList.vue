@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Device } from "../composables/useDevices";
 import { MonitorSmartphone, Laptop, Smartphone, Radar, Trash2, Network, Activity, Upload, Download, PauseCircle, PlayCircle, XCircle, ChevronRight } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
+import { formatLastSeen, formatTimeRemaining, isRecentlySeen } from "../utils/time";
 import { useFileTransfer } from "../composables/useFileTransfer";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
@@ -19,23 +20,9 @@ const emit = defineEmits<{
   (e: "scan"): void;
 }>();
 
-const formatLastSeen = (timestamp: number) => {
-  const seconds = Math.floor(Date.now() / 1000 - timestamp);
-  if (seconds < 10) return "Online";
-  if (seconds < 60) return "Just now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  return `${Math.floor(seconds / 3600)}h ago`;
-};
-
 const { transfers, pauseTransfer, resumeTransfer, cancelTransfer, sendFile } = useFileTransfer();
 
 const activeTransfers = computed(() => transfers.value);
-
-const formatTime = (seconds: number) => {
-  if (seconds < 60) return `${Math.ceil(seconds)}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
-  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-};
 
 const formatSpeed = (bps: number) => {
   if (bps === 0) return "-- MB/s";
@@ -46,15 +33,15 @@ const formatSpeed = (bps: number) => {
 // Keep devices active if seen in the last 120 seconds (to account for slower 15s polling) or if they are currently selected
 const activeDevices = computed(() => {
   return props.devices.filter(d => {
-    const isRecentlySeen = (Date.now() / 1000 - d.last_seen) < 120;
-    return d.isReachable || isRecentlySeen || d.id === props.selectedId;
+    const recentlySeen = isRecentlySeen(d.last_seen);
+    return d.isReachable || recentlySeen || d.id === props.selectedId;
   });
 });
 
 const savedDevices = computed(() => {
   return props.devices.filter(d => {
-    const isRecentlySeen = (Date.now() / 1000 - d.last_seen) < 120;
-    return !d.isReachable && !isRecentlySeen && d.id !== props.selectedId;
+    const recentlySeen = isRecentlySeen(d.last_seen);
+    return !d.isReachable && !recentlySeen && d.id !== props.selectedId;
   });
 });
 
@@ -171,7 +158,7 @@ onUnmounted(() => {
                 <span class="text-body-lg font-medium text-on-surface truncate">{{ t.fileName }}</span>
                 <span class="text-xs text-on-surface-variant flex items-center gap-2">
                   <span v-if="t.status === 'in_progress' && t.timeRemaining && t.timeRemaining > 0">
-                    {{ formatTime(t.timeRemaining) }} remaining
+                    {{ formatTimeRemaining(t.timeRemaining) }} remaining
                   </span>
                   <span v-else-if="t.status === 'paused'">Paused</span>
                   <span v-else-if="t.status === 'cancelled'">Cancelled</span>

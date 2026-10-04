@@ -13,14 +13,13 @@
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-opener": "^2",
+    "date-fns": "^4.4.0",
     "lucide-vue-next": "^0.564.0",
-    "luxon": "^3.7.2",
     "vue": "^3.5.13"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
-    "@types/luxon": "^3.7.2",
     "@vitejs/plugin-vue": "^6.0.7",
     "autoprefixer": "^10.5.4",
     "postcss": "^8.5.26",

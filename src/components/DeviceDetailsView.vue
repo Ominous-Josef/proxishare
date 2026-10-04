@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ChevronLeft, Laptop, Smartphone, MonitorSmartphone } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
+import { formatLastSeen, formatTimeRemaining } from "../utils/time";
 import FileTransfer from "./FileTransfer.vue";
 import TransfersView from "./TransfersView.vue";
 import FileTreeView from "./FileTreeView.vue";
@@ -19,25 +20,11 @@ const emit = defineEmits<{
   (e: "forget", id: string): void;
 }>();
 
-const formatLastSeen = (timestamp: number) => {
-  const seconds = Math.floor(Date.now() / 1000 - timestamp);
-  if (seconds < 10) return "Online";
-  if (seconds < 60) return "Just now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  return `${Math.floor(seconds / 3600)}h ago`;
-};
-
 const { transfers, pauseTransfer, resumeTransfer, cancelTransfer } = useFileTransfer();
 
 const activeTransfers = computed(() => {
   return transfers.value.filter(t => t.deviceId === props.device.id && ['in_progress', 'paused'].includes(t.status));
 });
-
-const formatTime = (secs: number) => {
-  if (!isFinite(secs) || secs <= 0) return "--";
-  if (secs < 60) return `${Math.ceil(secs)}s`;
-  return `${Math.floor(secs / 60)}m ${Math.ceil(secs % 60)}s`;
-};
 
 const formatSpeed = (bps: number) => {
   if (bps === 0) return "-- MB/s";
@@ -48,11 +35,11 @@ const formatSpeed = (bps: number) => {
 <template>
   <div class="flex-1 flex flex-col min-h-0 relative z-10 w-full max-w-7xl mx-auto px-6 md:px-12 py-8 overflow-y-auto">
     <!-- Header Navigation -->
-    <div class="flex items-center gap-4 mb-8">
-      <AppButton variant="ghost" size="icon" @click="emit('back')" class="shrink-0 -ml-2 hover:bg-surface-variant/50">
+    <div class="block items-center space-x-4 mb-8">
+      <AppButton variant="ghost" size="icon" @click="emit('back')" class="shrink-0 -ml-2 hover:bg-surface-variant/50 float-left mt-2">
         <ChevronLeft class="w-6 h-6" />
       </AppButton>
-      <div class="flex items-center gap-4 flex-1 min-w-0">
+      <div class="flex flex-wrap items-center gap-4 flex-1 min-w-0">
         <div class="w-12 h-12 rounded-full bg-surface-container flex items-center justify-center shrink-0 border border-white/10">
           <Laptop v-if="device.name.toLowerCase().includes('mac') || device.name.toLowerCase().includes('pc')" class="w-6 h-6 text-primary" />
           <Smartphone v-else-if="device.name.toLowerCase().includes('phone')" class="w-6 h-6 text-primary" />
@@ -115,7 +102,7 @@ const formatSpeed = (bps: number) => {
                 <span class="text-body-lg font-medium text-on-surface truncate">{{ t.fileName }}</span>
                 <span class="text-xs text-on-surface-variant flex items-center gap-2">
                   <span v-if="t.status === 'in_progress' && t.timeRemaining && t.timeRemaining > 0">
-                    {{ formatTime(t.timeRemaining) }} remaining
+                    {{ formatTimeRemaining(t.timeRemaining) }} remaining
                   </span>
                   <span v-else-if="t.status === 'paused'">Paused</span>
                   

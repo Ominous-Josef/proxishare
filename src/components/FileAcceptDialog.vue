@@ -2,6 +2,7 @@
 import { ref, onUnmounted, watch, computed } from "vue";
 import { FileDown, X } from "lucide-vue-next";
 import AppButton from "./AppButton.vue";
+import { formatCountdown } from "../utils/time";
 
 const props = defineProps<{
   isOpen: boolean;
@@ -60,12 +61,6 @@ const directoryInfo = computed(() => {
   
   return text;
 });
-
-const formatTime = (seconds: number) => {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-};
 
 const stopTimer = () => {
   if (timer) {
@@ -143,7 +138,7 @@ onUnmounted(() => {
         </div>
 
         <p class="text-xs text-danger font-medium mb-6">
-          Auto-rejecting in {{ formatTime(timeLeft) }}
+          Auto-rejecting in {{ formatCountdown(timeLeft) }}
         </p>
 
         <div class="flex gap-4 w-full pt-4 border-t border-white/5 mt-2">

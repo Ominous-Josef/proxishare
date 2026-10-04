@@ -23,7 +23,7 @@ import {
   useFileTransfer,
 } from "../composables/useFileTransfer";
 import { useToast } from "../composables/useToast";
-import { DateTime } from "luxon";
+import { formatTransferDate } from "../utils/time";
 
 const props = defineProps<{
   deviceId?: string | null;
@@ -130,17 +130,6 @@ watch(loadMoreTrigger, (el: HTMLElement | null) => {
   }
 });
 
-const formatDate = (timestamp: number) => {
-  const dt = DateTime.fromSeconds(timestamp);
-  const now = DateTime.now();
-
-  if (now.diff(dt, "days").days > 3) {
-    return dt.toLocaleString(DateTime.DATE_MED);
-  }
-
-  return dt.toRelative() || dt.toLocaleString(DateTime.DATE_MED);
-};
-
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return "0 B";
   const k = 1024;
@@ -223,7 +212,7 @@ const handleClearHistory = async () => {
                 <span v-if="record.is_dir">Folder</span>
                 <span v-else>File</span>
                 <span class="w-1 h-1 rounded-full bg-outline-variant/50"></span>
-                <span>{{ formatDate(record.created_at) }}</span>
+                <span>{{ formatTransferDate(record.created_at) }}</span>
                 <span v-if="record.file_exists === false" class="text-danger flex items-center gap-1 font-medium ml-2">
                   <AlertTriangle class="w-3 h-3" /> Missing
                 </span>
