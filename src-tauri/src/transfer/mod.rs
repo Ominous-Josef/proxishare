@@ -6,7 +6,7 @@ pub mod session;
 use crate::crypto::encryption::{peer_fingerprint, DeviceIdentity};
 use crate::crypto::security::PeerTrust;
 use crate::pairing::{commitment, new_nonce, pairing_code, PairParty, PAIRING_TTL};
-use crate::transfer::protocol::{read_message, write_message, MessageType};
+use crate::transfer::protocol::{finish_and_await_close, read_message, write_message, MessageType};
 use crate::transfer::receiver::FileReceiver;
 use crate::transfer::sender::{FileSender, TransferResult};
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig};
@@ -201,12 +201,13 @@ impl TransferManager {
 
         let (mut send_stream, _) = connection.open_bi().await?;
         write_message(&mut send_stream, &message).await?;
-        send_stream.finish()?;
-
-        // Give it a moment to send
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let delivered = finish_and_await_close(&mut send_stream, &connection).await;
         connection.close(quinn::VarInt::from_u32(0), b"message sent");
-        Ok(())
+        if delivered {
+            Ok(())
+        } else {
+            Err("The device did not confirm it received the message".into())
+        }
     }
 
     pub async fn ping_device(
@@ -244,8 +245,8 @@ impl TransferManager {
             _ => Err("Invalid response from device".into()),
         };
 
+        // The reply proves our message arrived, so there is nothing to wait for.
         send_stream.finish()?;
-        tokio::time::sleep(Duration::from_millis(100)).await;
         connection.close(quinn::VarInt::from_u32(0), b"ping complete");
 
         result
@@ -374,8 +375,7 @@ impl TransferManager {
         if outcome.is_ok() {
             println!("[Pairing] Device {} is now trusted", pairing.device_id);
             let _ = write_message(&mut pairing.send_stream, &MessageType::PairConfirmed).await;
-            let _ = pairing.send_stream.finish();
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            finish_and_await_close(&mut pairing.send_stream, &pairing.connection).await;
         }
         pairing
             .connection

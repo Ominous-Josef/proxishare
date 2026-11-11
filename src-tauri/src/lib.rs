@@ -503,11 +503,13 @@ async fn cancel_transfer(
 }
 
 #[tauri::command]
+/// Confirms the code our user typed. Returns the paired device's name, which
+/// can differ from the one the dialog showed if several requests claimed this ID.
 async fn accept_pairing(
     device_id: String,
     code: String,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let pending = state
         .pairing
         .write()
@@ -525,10 +527,7 @@ async fn accept_pairing(
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     pending
         .responder
-        .send(crate::pairing::Decision {
-            accepted: true,
-            done: done_tx,
-        })
+        .send(crate::pairing::Decision::Accept { done: done_tx })
         .map_err(|_| "The pairing request is no longer open".to_string())?;
 
     match tokio::time::timeout(std::time::Duration::from_secs(20), done_rx).await {
@@ -540,18 +539,14 @@ async fn accept_pairing(
     if let Err(e) = push_history(&state, &device_id, pending.ip, APP_PORT).await {
         println!("[Sync] History sync after pairing failed: {}", e);
     }
-    Ok(())
+    Ok(pending.name)
 }
 
 #[tauri::command]
 async fn reject_pairing(device_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     println!("[Pairing] Rejecting pairing for device: {}", device_id);
-    if let Some(pending) = state.pairing.write().await.remove_incoming(&device_id) {
-        let (done_tx, _done_rx) = tokio::sync::oneshot::channel();
-        let _ = pending.responder.send(crate::pairing::Decision {
-            accepted: false,
-            done: done_tx,
-        });
+    for pending in state.pairing.write().await.remove_all_incoming(&device_id) {
+        let _ = pending.responder.send(crate::pairing::Decision::Decline);
     }
     Ok(())
 }

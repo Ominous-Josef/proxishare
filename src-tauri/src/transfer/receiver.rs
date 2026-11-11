@@ -1,5 +1,5 @@
 use crate::transfer::protocol::{
-    read_message, write_message, FileMetadata, MessageType, SyncedTransfer, TransferOutcome,
+    finish_and_await_close, read_message, write_message, FileMetadata, MessageType, SyncedTransfer, TransferOutcome,
     MAX_CHUNK_SIZE,
 };
 use crate::transfer::sender::TransferProgress;
@@ -217,9 +217,7 @@ impl FileReceiver {
             device_name, device_id
         );
 
-        // Finish stream and wait to ensure QUIC delivers the ACK
-        let _ = send_stream.finish();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        finish_and_await_close(send_stream, &self.connection).await;
         Ok(())
     }
 
@@ -290,67 +288,75 @@ impl FileReceiver {
         let ip = self.remote_ip();
         let port = self.connection.remote_address().port();
         let (decision_tx, decision_rx) = oneshot::channel::<Decision>();
-        let added = self.pairing.write().await.add_incoming(
+        let first = self.pairing.write().await.add_incoming(
             &device_id,
+            &self.peer_fingerprint,
             &device_name,
             &ip,
             port,
             &code,
             decision_tx,
         );
-        if !added {
-            self.send_pair_result(&mut send_stream, false, "A pairing request from this device is already open")
-                .await;
-            return Err("Duplicate pairing request".into());
-        }
 
         // The code is never sent to the UI: the user must type what the other screen shows.
-        let _ = self.app_handle.emit(
-            "pairing-request",
-            serde_json::json!({ "device": { "id": device_id, "name": device_name } }),
-        );
-
-        let cancelled = |reason: &str| {
+        // If the UI is already asking about this device ID, the code typed there is
+        // checked against every open request for it, including this one.
+        if first {
             let _ = self.app_handle.emit(
-                "pairing-cancelled",
-                serde_json::json!({ "deviceId": device_id, "reason": reason }),
+                "pairing-request",
+                serde_json::json!({ "device": { "id": device_id, "name": device_name } }),
             );
-        };
+        }
 
         tokio::select! {
             decision = decision_rx => match decision {
-                Ok(Decision { accepted: true, done }) => {
+                Ok(Decision::Accept { done }) => {
                     let result = self
                         .complete_pairing(&mut send_stream, &mut recv_stream, &device_id, &device_name, &ip, port)
                         .await;
                     let _ = done.send(result.clone());
                     result.map_err(|e| e.into())
                 }
-                Ok(Decision { accepted: false, done }) => {
+                Ok(Decision::Decline) => {
                     self.send_pair_result(&mut send_stream, false, "Pairing was declined").await;
-                    let _ = done.send(Ok(()));
+                    Ok(())
+                }
+                Ok(Decision::Superseded) => {
+                    self.send_pair_result(&mut send_stream, false, "The pairing code was not confirmed").await;
                     Ok(())
                 }
                 Err(_) => {
                     // Too many wrong codes, or the request expired.
                     self.send_pair_result(&mut send_stream, false, "The pairing code was not confirmed").await;
-                    cancelled("The pairing code was not confirmed");
+                    self.withdraw_request(&device_id, "The pairing code was not confirmed").await;
                     Ok(())
                 }
             },
             _ = read_message(&mut recv_stream) => {
                 // The other side only speaks again after our result, so anything
                 // here (usually the stream closing) means it gave up.
-                self.pairing.write().await.remove_incoming(&device_id);
-                cancelled("The other device cancelled pairing");
+                self.withdraw_request(&device_id, "The other device cancelled pairing").await;
                 Ok(())
             }
             _ = tokio::time::sleep(PAIRING_TTL) => {
-                self.pairing.write().await.remove_incoming(&device_id);
+                self.withdraw_request(&device_id, "Pairing timed out").await;
                 self.send_pair_result(&mut send_stream, false, "Pairing timed out").await;
-                cancelled("Pairing timed out");
                 Ok(())
             }
+        }
+    }
+
+    /// Removes our pairing request and, if no other request for this device ID
+    /// is open, tells the UI. A spoofed request ending must not close the
+    /// dialog the real one is waiting on.
+    async fn withdraw_request(&self, device_id: &str, reason: &str) {
+        let mut pairing = self.pairing.write().await;
+        pairing.remove_incoming(device_id, &self.peer_fingerprint);
+        if !pairing.has_incoming(device_id) {
+            let _ = self.app_handle.emit(
+                "pairing-cancelled",
+                serde_json::json!({ "deviceId": device_id, "reason": reason }),
+            );
         }
     }
 
@@ -405,8 +411,7 @@ impl FileReceiver {
             },
         )
         .await;
-        let _ = send_stream.finish();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        finish_and_await_close(send_stream, &self.connection).await;
     }
 
     async fn handle_history_sync(
@@ -443,8 +448,7 @@ impl FileReceiver {
             },
         )
         .await;
-        let _ = send_stream.finish();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        finish_and_await_close(send_stream, &self.connection).await;
     }
 
     async fn receive(

@@ -83,9 +83,9 @@ const handlePairConfirm = async (code: string) => {
   if (!request || code.length !== 6) return;
   try {
     console.log("[Pairing] Accepting pairing for device:", request.device.id);
-    await invoke("accept_pairing", { deviceId: request.device.id, code });
+    const name = await invoke<string>("accept_pairing", { deviceId: request.device.id, code });
     request.isOpen = false;
-    addToast(`Paired with ${request.device.name}`, "success");
+    addToast(`Paired with ${name}`, "success");
     await refreshDevices();
     handleSelect(request.device.id);
   } catch (e) {

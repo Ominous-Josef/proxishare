@@ -217,6 +217,20 @@ pub async fn read_message<R: AsyncRead + Unpin>(
     Ok(bincode_options().deserialize(&data)?)
 }
 
+/// How long the side that sent a conversation's last message waits for the peer
+/// to close the connection.
+pub const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Ends a conversation in which we sent the last message. The peer closes the
+/// connection once it has read that message (its handler returns and drops the
+/// connection), so we wait for that instead of guessing with a sleep: closing
+/// first could discard data the peer has received but not yet read. Returns
+/// false if the peer didn't close within `CLOSE_TIMEOUT`.
+pub async fn finish_and_await_close(stream: &mut quinn::SendStream, connection: &quinn::Connection) -> bool {
+    let _ = stream.finish();
+    tokio::time::timeout(CLOSE_TIMEOUT, connection.closed()).await.is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +275,69 @@ mod tests {
         a.write_all(&header).await.unwrap();
         let err = read_message(&mut b).await.unwrap_err().to_string();
         assert!(err.contains("too large"), "{}", err);
+    }
+
+    /// The sender closes as soon as `finish_and_await_close` returns. A peer
+    /// that has received the message but is slow to read it must still get
+    /// all of it.
+    #[tokio::test]
+    async fn last_message_survives_closing_after_the_wait() {
+        use crate::crypto::encryption::DeviceIdentity;
+        use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let server_identity = DeviceIdentity::generate_ephemeral().unwrap();
+        let client_identity = DeviceIdentity::generate_ephemeral().unwrap();
+        let server = quinn::Endpoint::server(
+            quinn::ServerConfig::with_crypto(Arc::new(
+                QuicServerConfig::try_from(server_identity.get_server_config().unwrap()).unwrap(),
+            )),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .unwrap();
+        let mut client = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        client.set_default_client_config(quinn::ClientConfig::new(Arc::new(
+            QuicClientConfig::try_from(client_identity.get_client_config().unwrap()).unwrap(),
+        )));
+
+        let reader = tokio::spawn({
+            let server = server.clone();
+            async move {
+                let connection = server.accept().await.unwrap().await.unwrap();
+                let (_send, mut recv) = connection.accept_bi().await.unwrap();
+                // Busy before reading, so the message sits received but unread.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                read_message(&mut recv).await.map_err(|e| e.to_string())
+                // Returning drops the connection, which closes it.
+            }
+        });
+
+        // Small enough to fit the receive window, so it is fully received
+        // (and acknowledged) before the reader reads any of it.
+        let name = "x".repeat(256 * 1024);
+        let connection = client
+            .connect(server.local_addr().unwrap(), "proxishare.local")
+            .unwrap()
+            .await
+            .unwrap();
+        let (mut send, _recv) = connection.open_bi().await.unwrap();
+        write_message(
+            &mut send,
+            &MessageType::Hello {
+                device_id: "a".into(),
+                device_name: name.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(finish_and_await_close(&mut send, &connection).await);
+        connection.close(0u32.into(), b"done");
+
+        let received = tokio::time::timeout(Duration::from_secs(5), reader).await.unwrap().unwrap();
+        match received {
+            Ok(MessageType::Hello { device_name, .. }) => assert_eq!(device_name, name),
+            other => panic!("message lost: {:?}", other.map(|_| ())),
+        }
     }
 }
