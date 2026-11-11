@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+pub const STORE_FILE: &str = "trust_store.json";
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TrustedDevice {
     pub id: String,
@@ -53,20 +55,23 @@ pub struct SecurityService {
 }
 
 impl SecurityService {
-    pub fn new(app_dir: PathBuf, my_id: String) -> Self {
-        let store_path = app_dir.join("trust_store.json");
-        let trusted_devices = if store_path.exists() {
-            let content = fs::read_to_string(&store_path).unwrap_or_default();
-            serde_json::from_str(&content).unwrap_or_else(|_| HashMap::new())
-        } else {
-            HashMap::new()
+    /// Loads the trust store from `app_dir`. A missing store is empty, but an
+    /// unreadable one is an error: treating it as empty would let the next
+    /// save overwrite every pairing.
+    pub fn load(app_dir: PathBuf, my_id: String) -> Result<Self, crate::GenericError> {
+        let store_path = app_dir.join(STORE_FILE);
+        let trusted_devices = match fs::read_to_string(&store_path) {
+            Ok(content) => serde_json::from_str(&content)
+                .map_err(|e| format!("Trust store at {:?} is unreadable: {}", store_path, e))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(e) => return Err(e.into()),
         };
 
-        Self {
+        Ok(Self {
             store_path,
             trusted_devices,
             my_id,
-        }
+        })
     }
 
     pub fn get_device_id(&self) -> &String {
@@ -134,9 +139,16 @@ impl SecurityService {
         }
     }
 
+    /// Writes a temporary file and renames it over the store, so a crash
+    /// mid-save leaves the previous store intact rather than a truncated one.
     fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
         let content = serde_json::to_string(&self.trusted_devices)?;
-        fs::write(&self.store_path, content)?;
+        let tmp_path = self.store_path.with_extension("json.tmp");
+        let mut file = fs::File::create(&tmp_path)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&tmp_path, &self.store_path)?;
         Ok(())
     }
 }
@@ -145,11 +157,27 @@ impl SecurityService {
 mod tests {
     use super::*;
 
-    fn service(json: &str) -> SecurityService {
+    fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("proxishare-trust-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("trust_store.json"), json).unwrap();
-        SecurityService::new(dir, "me".into())
+        dir
+    }
+
+    fn service(json: &str) -> SecurityService {
+        let dir = temp_dir();
+        std::fs::write(dir.join(STORE_FILE), json).unwrap();
+        SecurityService::load(dir, "me".into()).unwrap()
+    }
+
+    fn device(id: &str, fingerprint: &str) -> TrustedDevice {
+        TrustedDevice {
+            id: id.into(),
+            name: "Laptop".into(),
+            last_ip: "10.0.0.2".into(),
+            last_port: 51731,
+            last_seen: 0,
+            fingerprint: Some(fingerprint.into()),
+        }
     }
 
     const STORE: &str = r#"{
@@ -180,5 +208,36 @@ mod tests {
         assert!(s.can_pair("pinned", "abc").is_ok());
         assert!(s.can_pair("legacy", "anything").is_ok());
         assert!(s.can_pair("stranger", "anything").is_ok());
+    }
+
+    #[test]
+    fn missing_store_is_empty() {
+        let s = SecurityService::load(temp_dir(), "me".into()).unwrap();
+        assert!(s.trusted_devices.is_empty());
+    }
+
+    #[test]
+    fn corrupt_store_is_an_error_not_an_empty_store() {
+        let dir = temp_dir();
+        std::fs::write(dir.join(STORE_FILE), r#"{"pinned": {"id":"pin"#).unwrap();
+        assert!(SecurityService::load(dir.clone(), "me".into()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pairings_survive_save_and_reload() {
+        let dir = temp_dir();
+        let mut s = SecurityService::load(dir.clone(), "me".into()).unwrap();
+        s.add_trusted(device("a", "fa")).unwrap();
+        s.add_trusted(device("b", "fb")).unwrap();
+        s.remove_trusted("a").unwrap();
+
+        let reloaded = SecurityService::load(dir.clone(), "me".into()).unwrap();
+        assert_eq!(reloaded.verify_peer("b", "fb"), PeerTrust::Verified);
+        assert_eq!(reloaded.verify_peer("a", "fa"), PeerTrust::Unknown);
+        // Only the store is left behind, no temporary file.
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(files, vec![std::ffi::OsString::from(STORE_FILE)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

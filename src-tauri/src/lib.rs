@@ -737,6 +737,30 @@ fn load_identity(
     }
 }
 
+/// Loads the paired devices. If the store is damaged, it is set aside (so the
+/// pairings can still be recovered by hand) and an empty one is started:
+/// devices then show as unpaired and can be paired again.
+fn load_trust_store(
+    app_data_dir: &std::path::Path,
+    device_id: &str,
+) -> Result<SecurityService, Box<dyn std::error::Error>> {
+    match SecurityService::load(app_data_dir.to_path_buf(), device_id.to_string()) {
+        Ok(security) => Ok(security),
+        Err(e) => {
+            println!("[Trust] {}. Starting with no paired devices.", e);
+            let store_path = app_data_dir.join(crate::crypto::security::STORE_FILE);
+            let backup = app_data_dir.join(format!(
+                "{}.damaged-{}",
+                crate::crypto::security::STORE_FILE,
+                chrono::Utc::now().timestamp()
+            ));
+            std::fs::rename(&store_path, &backup)?;
+            SecurityService::load(app_data_dir.to_path_buf(), device_id.to_string())
+                .map_err(|e| e as Box<dyn std::error::Error>)
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -788,7 +812,7 @@ pub fn run() {
             let initial_settings = settings_manager.get_settings();
             let settings = Arc::new(RwLock::new(settings_manager));
 
-            let security = Arc::new(RwLock::new(SecurityService::new(app_data_dir.clone(), device_id.clone())));
+            let security = Arc::new(RwLock::new(load_trust_store(&app_data_dir, &device_id)?));
 
             // Initialize Database
             let db_path = app_data_dir.join("proxishare.db");

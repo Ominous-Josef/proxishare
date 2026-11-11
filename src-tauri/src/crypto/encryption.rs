@@ -276,3 +276,193 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// Real QUIC handshakes over loopback, using the production TLS configs. These
+/// cover what every connection relies on: that `peer_fingerprint` names a key
+/// the peer actually holds, and that the trust store rejects any other key.
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+    use crate::crypto::security::{PeerTrust, SecurityService, TrustedDevice};
+    use rustls::sign::CertifiedKey;
+    use std::time::Duration;
+
+    const STEP_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// What each side saw: the peer's fingerprint, or why the handshake failed.
+    struct Outcome {
+        client: Result<String, String>,
+        server: Result<String, String>,
+    }
+
+    async fn handshake(server_config: rustls::ServerConfig, client_config: rustls::ClientConfig) -> Outcome {
+        let server_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(server_config).unwrap();
+        let server = quinn::Endpoint::server(
+            quinn::ServerConfig::with_crypto(Arc::new(server_crypto)),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .unwrap();
+        let client_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(client_config).unwrap();
+        let client = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        let connecting = client
+            .connect_with(
+                quinn::ClientConfig::new(Arc::new(client_crypto)),
+                server.local_addr().unwrap(),
+                "proxishare.local",
+            )
+            .unwrap();
+
+        // Each side is bounded on its own, so a failure on one side can't hang the test.
+        let client_side = async {
+            let connection = tokio::time::timeout(STEP_TIMEOUT, connecting)
+                .await
+                .map_err(|_| "timed out".to_string())?
+                .map_err(|e| e.to_string())?;
+            peer_fingerprint(&connection).map_err(|e| e.to_string())
+        };
+        let server_side = async {
+            let connection = tokio::time::timeout(STEP_TIMEOUT, async {
+                server.accept().await.ok_or("endpoint closed")?.await.map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|_| "timed out".to_string())??;
+            peer_fingerprint(&connection).map_err(|e| e.to_string())
+        };
+        let (client, server) = tokio::join!(client_side, server_side);
+        Outcome { client, server }
+    }
+
+    /// Presents `cert_of`'s certificate while signing with `key_of`'s key: what
+    /// an attacker can do after copying a paired device's (public) certificate.
+    fn forged(cert_of: &DeviceIdentity, key_of: &DeviceIdentity) -> Arc<CertifiedKey> {
+        let key = provider().key_provider.load_private_key(key_of.private_key()).unwrap();
+        Arc::new(CertifiedKey::new(cert_of.cert_chain(), key))
+    }
+
+    #[derive(Debug)]
+    struct Present(Option<Arc<CertifiedKey>>);
+
+    impl rustls::server::ResolvesServerCert for Present {
+        fn resolve(&self, _: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+            self.0.clone()
+        }
+    }
+
+    impl rustls::client::ResolvesClientCert for Present {
+        fn resolve(&self, _: &[&[u8]], _: &[SignatureScheme]) -> Option<Arc<CertifiedKey>> {
+            self.0.clone()
+        }
+
+        fn has_certs(&self) -> bool {
+            self.0.is_some()
+        }
+    }
+
+    fn server_presenting(identity: &DeviceIdentity, cert: Arc<CertifiedKey>) -> rustls::ServerConfig {
+        let mut config = identity.get_server_config().unwrap();
+        config.cert_resolver = Arc::new(Present(Some(cert)));
+        config
+    }
+
+    fn client_presenting(identity: &DeviceIdentity, cert: Option<Arc<CertifiedKey>>) -> rustls::ClientConfig {
+        let mut config = identity.get_client_config().unwrap();
+        config.client_auth_cert_resolver = Arc::new(Present(cert));
+        config
+    }
+
+    /// A trust store with `device_id` paired to `identity`'s key.
+    fn paired(device_id: &str, identity: &DeviceIdentity) -> SecurityService {
+        let dir = std::env::temp_dir().join(format!("proxishare-hs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut security = SecurityService::load(dir, "me".into()).unwrap();
+        security
+            .add_trusted(TrustedDevice {
+                id: device_id.into(),
+                name: "Laptop".into(),
+                last_ip: "127.0.0.1".into(),
+                last_port: 51731,
+                last_seen: 0,
+                fingerprint: Some(identity.fingerprint.clone()),
+            })
+            .unwrap();
+        security
+    }
+
+    #[tokio::test]
+    async fn each_side_learns_the_other_sides_key() {
+        let server = DeviceIdentity::generate_ephemeral().unwrap();
+        let client = DeviceIdentity::generate_ephemeral().unwrap();
+        let outcome = handshake(server.get_server_config().unwrap(), client.get_client_config().unwrap()).await;
+        assert_eq!(outcome.client.unwrap(), server.fingerprint);
+        assert_eq!(outcome.server.unwrap(), client.fingerprint);
+    }
+
+    #[tokio::test]
+    async fn sending_to_an_impostor_is_a_key_mismatch() {
+        let laptop = DeviceIdentity::generate_ephemeral().unwrap();
+        let impostor = DeviceIdentity::generate_ephemeral().unwrap();
+        let me = DeviceIdentity::generate_ephemeral().unwrap();
+        let security = paired("laptop", &laptop);
+
+        // What `connect_verified` checks before sending anything.
+        let real = handshake(laptop.get_server_config().unwrap(), me.get_client_config().unwrap()).await;
+        assert_eq!(security.verify_peer("laptop", &real.client.unwrap()), PeerTrust::Verified);
+
+        let fake = handshake(impostor.get_server_config().unwrap(), me.get_client_config().unwrap()).await;
+        assert_eq!(security.verify_peer("laptop", &fake.client.unwrap()), PeerTrust::KeyMismatch);
+    }
+
+    #[tokio::test]
+    async fn receiving_from_an_impostor_is_a_key_mismatch() {
+        let laptop = DeviceIdentity::generate_ephemeral().unwrap();
+        let impostor = DeviceIdentity::generate_ephemeral().unwrap();
+        let me = DeviceIdentity::generate_ephemeral().unwrap();
+        let security = paired("laptop", &laptop);
+
+        // What `FileReceiver` checks before accepting an offer or history.
+        let real = handshake(me.get_server_config().unwrap(), laptop.get_client_config().unwrap()).await;
+        assert_eq!(security.verify_peer("laptop", &real.server.unwrap()), PeerTrust::Verified);
+
+        let fake = handshake(me.get_server_config().unwrap(), impostor.get_client_config().unwrap()).await;
+        assert_eq!(security.verify_peer("laptop", &fake.server.unwrap()), PeerTrust::KeyMismatch);
+    }
+
+    #[tokio::test]
+    async fn server_with_a_copied_certificate_is_rejected() {
+        let laptop = DeviceIdentity::generate_ephemeral().unwrap();
+        let impostor = DeviceIdentity::generate_ephemeral().unwrap();
+        let me = DeviceIdentity::generate_ephemeral().unwrap();
+
+        let outcome = handshake(
+            server_presenting(&impostor, forged(&laptop, &impostor)),
+            me.get_client_config().unwrap(),
+        )
+        .await;
+        assert!(outcome.client.is_err(), "client accepted a forged server: {:?}", outcome.client);
+    }
+
+    #[tokio::test]
+    async fn client_with_a_copied_certificate_is_rejected() {
+        let laptop = DeviceIdentity::generate_ephemeral().unwrap();
+        let impostor = DeviceIdentity::generate_ephemeral().unwrap();
+        let me = DeviceIdentity::generate_ephemeral().unwrap();
+
+        let outcome = handshake(
+            me.get_server_config().unwrap(),
+            client_presenting(&impostor, Some(forged(&laptop, &impostor))),
+        )
+        .await;
+        assert!(outcome.server.is_err(), "server accepted a forged client: {:?}", outcome.server);
+    }
+
+    #[tokio::test]
+    async fn client_without_a_certificate_is_rejected() {
+        let me = DeviceIdentity::generate_ephemeral().unwrap();
+        let anonymous = DeviceIdentity::generate_ephemeral().unwrap();
+
+        // Refused by the handshake (client auth is mandatory) and, failing
+        // that, by `peer_fingerprint`.
+        let outcome = handshake(me.get_server_config().unwrap(), client_presenting(&anonymous, None)).await;
+        assert!(outcome.server.is_err(), "server accepted a client with no certificate: {:?}", outcome.server);
+    }
+}
