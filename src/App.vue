@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 
-import { computed, onMounted, ref, watchEffect } from "vue";
+import { computed, nextTick, onMounted, ref, watchEffect } from "vue";
 import DeviceList from "./components/DeviceList.vue";
 import DeviceDetailsView from "./components/DeviceDetailsView.vue";
 import PairingDialog from "./components/PairingDialog.vue";
@@ -29,6 +29,19 @@ const pairingRequest = ref<{
   device: { id: string; name: string };
   isOpen: boolean;
 } | null>(null);
+// Requests that arrived while the dialog was busy with another device. A new
+// request never replaces the one the user is typing a code for.
+const pairingQueue = ref<{ id: string; name: string }[]>([]);
+
+const closePairingDialog = async () => {
+  if (pairingRequest.value) pairingRequest.value.isOpen = false;
+  const next = pairingQueue.value.shift();
+  if (next) {
+    // Let the dialog see it close, so it clears the typed code.
+    await nextTick();
+    pairingRequest.value = { device: next, isOpen: true };
+  }
+};
 // A pairing we started: show this code until the other user types it.
 const outgoingPairing = ref<{ deviceId: string; code: string } | null>(null);
 
@@ -84,7 +97,7 @@ const handlePairConfirm = async (code: string) => {
   try {
     console.log("[Pairing] Accepting pairing for device:", request.device.id);
     const name = await invoke<string>("accept_pairing", { deviceId: request.device.id, code });
-    request.isOpen = false;
+    await closePairingDialog();
     addToast(`Paired with ${name}`, "success");
     await refreshDevices();
     handleSelect(request.device.id);
@@ -94,7 +107,7 @@ const handlePairConfirm = async (code: string) => {
     addToast(message, "error");
     // Wrong code: let the user retry. Anything else ends the request.
     if (!message.startsWith("Wrong pairing code")) {
-      request.isOpen = false;
+      await closePairingDialog();
     }
   }
 };
@@ -129,7 +142,7 @@ const handleForget = async (id: string) => {
 const handlePairCancel = async () => {
   const request = pairingRequest.value;
   if (!request) return;
-  request.isOpen = false;
+  await closePairingDialog();
   try {
     await invoke("reject_pairing", { deviceId: request.device.id });
   } catch (e) {
@@ -162,10 +175,15 @@ onMounted(async () => {
   });
 
   await listen("pairing-request", (event: any) => {
-    pairingRequest.value = {
-      device: event.payload.device,
-      isOpen: true,
-    };
+    const device = event.payload.device;
+    const current = pairingRequest.value;
+    if (current?.isOpen) {
+      if (current.device.id !== device.id && !pairingQueue.value.some((d) => d.id === device.id)) {
+        pairingQueue.value.push(device);
+      }
+      return;
+    }
+    pairingRequest.value = { device, isOpen: true };
   });
 
   // The other device answered a pairing request we sent.
@@ -183,12 +201,13 @@ onMounted(async () => {
   });
 
   // The device that asked to pair gave up, or the request expired.
-  await listen("pairing-cancelled", (event: any) => {
+  await listen("pairing-cancelled", async (event: any) => {
     const { deviceId, reason } = event.payload;
+    pairingQueue.value = pairingQueue.value.filter((d) => d.id !== deviceId);
     const request = pairingRequest.value;
     if (request && request.device.id === deviceId && request.isOpen) {
-      request.isOpen = false;
       addToast(reason || "Pairing was cancelled", "error");
+      await closePairingDialog();
     }
   });
 

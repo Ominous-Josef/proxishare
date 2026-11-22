@@ -99,6 +99,14 @@ impl SecurityService {
         }
     }
 
+    /// Whether this key is pinned for any paired device. Decides how much a
+    /// connection may do before it has said which device it is.
+    pub fn is_known_key(&self, fingerprint: &str) -> bool {
+        self.trusted_devices
+            .values()
+            .any(|d| d.fingerprint.as_deref() == Some(fingerprint))
+    }
+
     pub fn pinned_fingerprint(&self, device_id: &str) -> Option<&str> {
         self.trusted_devices
             .get(device_id)
@@ -199,6 +207,13 @@ mod tests {
         assert_eq!(s.verify_peer("pinned", "abc"), PeerTrust::Verified);
         assert_eq!(s.verify_peer("pinned", "evil"), PeerTrust::KeyMismatch);
         assert_eq!(s.verify_peer("stranger", "abc"), PeerTrust::Unknown);
+    }
+
+    #[test]
+    fn known_keys_are_only_pinned_ones() {
+        let s = service(STORE);
+        assert!(s.is_known_key("abc"));
+        assert!(!s.is_known_key("evil"));
     }
 
     #[test]

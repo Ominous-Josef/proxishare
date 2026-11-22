@@ -13,6 +13,22 @@ use tokio::sync::oneshot;
 
 pub const PAIRING_TTL: Duration = Duration::from_secs(300);
 pub const MAX_CODE_ATTEMPTS: u8 = 3;
+/// Open requests one address may hold, across all device IDs. Keys are free
+/// to make, so this, not the per-key rule, is what limits a single attacker.
+const MAX_PENDING_PER_ADDRESS: usize = 3;
+/// Open requests overall.
+const MAX_PENDING_TOTAL: usize = 64;
+
+/// What `add_incoming` did with a request.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Added {
+    /// The device's first open request: the UI should be asked.
+    First,
+    /// Joined requests already open for this device ID (the UI is already asking).
+    Joined,
+    /// Too many open requests from this address, or overall.
+    Refused,
+}
 
 pub type Nonce = [u8; 32];
 
@@ -83,6 +99,8 @@ pub struct PendingIncoming {
     pub port: u16,
     /// The key the requester proved it holds.
     fingerprint: String,
+    /// The address the request is counted against.
+    address: String,
     code: String,
     expires: Instant,
     pub responder: oneshot::Sender<Decision>,
@@ -141,8 +159,7 @@ impl PairingState {
     /// Stores an incoming request. A request from a different key sits beside
     /// any already open for this device ID, so a spoofed request can neither
     /// replace nor block the real one; a request from the same key replaces
-    /// its own earlier one. Returns true if this is the device's first open
-    /// request, i.e. the UI should be asked.
+    /// its own earlier one. Each address may only hold a few open requests.
     #[allow(clippy::too_many_arguments)]
     pub fn add_incoming(
         &mut self,
@@ -153,11 +170,37 @@ impl PairingState {
         port: u16,
         code: &str,
         responder: oneshot::Sender<Decision>,
-    ) -> bool {
+    ) -> Added {
         self.prune();
+        let address = match ip.parse() {
+            Ok(ip) => crate::transfer::limits::address_group(ip).to_string(),
+            Err(_) => ip.to_string(),
+        };
+        // A retry from the same key replaces its own request, so it doesn't count.
+        let replaces = |p: &PendingIncoming| p.fingerprint == fingerprint;
+        let replacing = self
+            .incoming
+            .get(device_id)
+            .is_some_and(|d| d.requests.iter().any(replaces));
+        let others = self.incoming.iter().flat_map(|(id, d)| {
+            d.requests
+                .iter()
+                .filter(move |p| !(id == device_id && replaces(p)))
+        });
+        let (mut total, mut at_address) = (0, 0);
+        for p in others {
+            total += 1;
+            if p.address == address {
+                at_address += 1;
+            }
+        }
+        if !replacing && (at_address >= MAX_PENDING_PER_ADDRESS || total >= MAX_PENDING_TOTAL) {
+            return Added::Refused;
+        }
+
         let device = self.incoming.entry(device_id.to_string()).or_default();
         let first = device.requests.is_empty();
-        if let Some(i) = device.requests.iter().position(|p| p.fingerprint == fingerprint) {
+        if let Some(i) = device.requests.iter().position(replaces) {
             let _ = device.requests.swap_remove(i).responder.send(Decision::Superseded);
         }
         device.requests.push(PendingIncoming {
@@ -165,11 +208,16 @@ impl PairingState {
             ip: ip.to_string(),
             port,
             fingerprint: fingerprint.to_string(),
+            address,
             code: code.to_string(),
             expires: Instant::now() + PAIRING_TTL,
             responder,
         });
-        first
+        if first {
+            Added::First
+        } else {
+            Added::Joined
+        }
     }
 
     /// Checks the code the user typed against the device's open requests. On
@@ -297,9 +345,46 @@ mod tests {
     }
 
     fn add(p: &mut PairingState, id: &str, fp: &str, code: &str) -> (bool, oneshot::Receiver<Decision>) {
+        add_from(p, "10.0.0.2", id, fp, code)
+    }
+
+    fn add_from(
+        p: &mut PairingState,
+        ip: &str,
+        id: &str,
+        fp: &str,
+        code: &str,
+    ) -> (bool, oneshot::Receiver<Decision>) {
         let (tx, rx) = oneshot::channel();
-        let first = p.add_incoming(id, fp, "Laptop", "10.0.0.2", 51731, code, tx);
-        (first, rx)
+        let added = p.add_incoming(id, fp, "Laptop", ip, 51731, code, tx);
+        assert_ne!(added, Added::Refused);
+        (added == Added::First, rx)
+    }
+
+    #[test]
+    fn one_address_cannot_hold_many_requests() {
+        let mut p = PairingState::default();
+        for i in 0..MAX_PENDING_PER_ADDRESS {
+            add_from(&mut p, "10.0.0.66", &format!("spam-{}", i), &format!("k{}", i), "000000");
+        }
+        let (tx, _rx) = oneshot::channel();
+        assert_eq!(p.add_incoming("spam-x", "kx", "Evil", "10.0.0.66", 51731, "000000", tx), Added::Refused);
+        // A retry from a key already holding a request is still allowed.
+        let (tx, _rx) = oneshot::channel();
+        assert_ne!(p.add_incoming("spam-0", "k0", "Evil", "10.0.0.66", 51731, "000000", tx), Added::Refused);
+        // The real device, elsewhere, is unaffected.
+        let (first, _rx) = add_from(&mut p, "10.0.0.2", "dev", "fa", "123456");
+        assert!(first);
+    }
+
+    #[test]
+    fn ipv6_requests_are_counted_per_slash_64() {
+        let mut p = PairingState::default();
+        for i in 0..MAX_PENDING_PER_ADDRESS {
+            add_from(&mut p, &format!("2001:db8::{}", i + 1), &format!("spam-{}", i), &format!("k{}", i), "000000");
+        }
+        let (tx, _rx) = oneshot::channel();
+        assert_eq!(p.add_incoming("spam-x", "kx", "Evil", "2001:db8::ff", 51731, "000000", tx), Added::Refused);
     }
 
     fn superseded(rx: &mut oneshot::Receiver<Decision>) -> bool {

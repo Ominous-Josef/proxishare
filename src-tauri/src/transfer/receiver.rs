@@ -1,10 +1,10 @@
 use crate::transfer::protocol::{
-    finish_and_await_close, read_message, write_message, FileMetadata, MessageType, SyncedTransfer, TransferOutcome,
-    MAX_CHUNK_SIZE,
+    finish_and_await_close, read_message, read_message_limited, write_message, FileMetadata, MessageType, SyncedTransfer, TransferOutcome,
+    MAX_CHUNK_SIZE, MAX_MESSAGE_SIZE, UNVERIFIED_MESSAGE_SIZE,
 };
 use crate::transfer::sender::TransferProgress;
 use crate::crypto::security::PeerTrust;
-use crate::pairing::{commitment, new_nonce, pairing_code, Decision, PairParty, PAIRING_TTL};
+use crate::pairing::{commitment, new_nonce, pairing_code, Added, Decision, PairParty, PAIRING_TTL};
 use crate::transfer::session::{
     resolve_destination, unique_name, FileVerdict, Phase, ReceiveSession,
 };
@@ -24,6 +24,8 @@ const DECISION_TIMEOUT: Duration = Duration::from_secs(310);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 /// Upper bound on history records accepted from a peer in one sync.
 const MAX_SYNC_RECORDS: usize = 100;
+/// How long a new connection has to open its stream and send its first message.
+const FIRST_MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the background reader hands to the transfer loop. Reading happens in its
 /// own task so the loop can `select!` on it without losing half-read frames.
@@ -116,10 +118,25 @@ impl FileReceiver {
     /// Each connection carries exactly one purpose, decided by its first message.
     /// Control messages (ping, pairing, history) are never accepted mid-transfer.
     pub async fn handle_transfer(&self) -> Result<(), crate::GenericError> {
-        let (mut send_stream, recv_stream) = self.connection.accept_bi().await?;
-        let mut recv_stream = recv_stream;
+        // Until the peer proves it's paired it may only send small messages,
+        // and it must say something promptly or lose the connection.
+        let limit = if self.security.read().await.is_known_key(&self.peer_fingerprint) {
+            MAX_MESSAGE_SIZE
+        } else {
+            UNVERIFIED_MESSAGE_SIZE
+        };
+        let opening = async {
+            let (send_stream, mut recv_stream) = self.connection.accept_bi().await?;
+            let first = read_message_limited(&mut recv_stream, limit).await?;
+            Ok::<_, crate::GenericError>((send_stream, recv_stream, first))
+        };
+        let (mut send_stream, recv_stream, first) =
+            match tokio::time::timeout(FIRST_MESSAGE_TIMEOUT, opening).await {
+                Ok(result) => result?,
+                Err(_) => return Err("Peer sent nothing in time".into()),
+            };
 
-        match read_message(&mut recv_stream).await? {
+        match first {
             MessageType::Hello {
                 device_id,
                 device_name,
@@ -259,7 +276,7 @@ impl FileReceiver {
 
         let their_nonce = match tokio::time::timeout(
             Duration::from_secs(30),
-            read_message(&mut recv_stream),
+            read_message_limited(&mut recv_stream, UNVERIFIED_MESSAGE_SIZE),
         )
         .await
         {
@@ -288,7 +305,7 @@ impl FileReceiver {
         let ip = self.remote_ip();
         let port = self.connection.remote_address().port();
         let (decision_tx, decision_rx) = oneshot::channel::<Decision>();
-        let first = self.pairing.write().await.add_incoming(
+        let added = self.pairing.write().await.add_incoming(
             &device_id,
             &self.peer_fingerprint,
             &device_name,
@@ -297,11 +314,16 @@ impl FileReceiver {
             &code,
             decision_tx,
         );
+        if added == Added::Refused {
+            self.send_pair_result(&mut send_stream, false, "Too many pairing requests, try again later")
+                .await;
+            return Err("Too many pairing requests from this address".into());
+        }
 
         // The code is never sent to the UI: the user must type what the other screen shows.
         // If the UI is already asking about this device ID, the code typed there is
         // checked against every open request for it, including this one.
-        if first {
+        if added == Added::First {
             let _ = self.app_handle.emit(
                 "pairing-request",
                 serde_json::json!({ "device": { "id": device_id, "name": device_name } }),
@@ -332,7 +354,7 @@ impl FileReceiver {
                     Ok(())
                 }
             },
-            _ = read_message(&mut recv_stream) => {
+            _ = read_message_limited(&mut recv_stream, UNVERIFIED_MESSAGE_SIZE) => {
                 // The other side only speaks again after our result, so anything
                 // here (usually the stream closing) means it gave up.
                 self.withdraw_request(&device_id, "The other device cancelled pairing").await;
@@ -381,7 +403,12 @@ impl FileReceiver {
         .await
         .map_err(|e| format!("The other device is no longer reachable: {}", e))?;
 
-        match tokio::time::timeout(Duration::from_secs(10), read_message(recv_stream)).await {
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            read_message_limited(recv_stream, UNVERIFIED_MESSAGE_SIZE),
+        )
+        .await
+        {
             Ok(Ok(MessageType::PairConfirmed)) => {}
             _ => return Err("The other device did not confirm the pairing".to_string()),
         }
@@ -625,11 +652,10 @@ impl FileReceiver {
                     },
                 )
                 .await;
-                let _ = send_stream.finish();
                 self.set_db_status(&offer.transfer_id, "failed", bytes).await;
                 self.emit_progress(&st, "failed");
                 let _ = self.app_handle.emit("history-updated", ());
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                finish_and_await_close(&mut send_stream, &self.connection).await;
                 Err(e)
             }
         }
@@ -733,16 +759,14 @@ impl FileReceiver {
                     },
                 )
                 .await;
-                let _ = send_stream.finish();
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                finish_and_await_close(send_stream, &self.connection).await;
                 Ok(Some(End::Declined))
             }
             (TransferStatus::Cancelled, _) => {
                 println!("[Receiver] Sending TransferCancel to sender...");
                 let _ = write_message(send_stream, &MessageType::TransferCancel { transfer_id })
                     .await;
-                // Give sender time to read the message before closing socket
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                finish_and_await_close(send_stream, &self.connection).await;
                 Ok(Some(End::Cancelled))
             }
             (TransferStatus::Paused, _) => {
@@ -893,11 +917,7 @@ impl FileReceiver {
                     },
                 )
                 .await?;
-                send_stream.finish()?;
-
-                // Give QUIC time to flush the ACK bytes over the wire
-                // before we return and the connection gets dropped
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                finish_and_await_close(send_stream, &self.connection).await;
                 self.connection
                     .close(quinn::VarInt::from_u32(0), b"transfer complete");
                 return Ok(Some(End::Completed(outcome)));

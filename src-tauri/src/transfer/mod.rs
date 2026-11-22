@@ -1,3 +1,4 @@
+pub mod limits;
 pub mod protocol;
 pub mod receiver;
 pub mod sender;
@@ -6,10 +7,14 @@ pub mod session;
 use crate::crypto::encryption::{peer_fingerprint, DeviceIdentity};
 use crate::crypto::security::PeerTrust;
 use crate::pairing::{commitment, new_nonce, pairing_code, PairParty, PAIRING_TTL};
-use crate::transfer::protocol::{finish_and_await_close, read_message, write_message, MessageType};
+use crate::transfer::limits::{ConnectionLimiter, PeerClass, MAX_HANDSHAKES, MAX_QUEUED_INCOMING};
+use crate::transfer::protocol::{
+    finish_and_await_close, read_message_limited, write_message, MessageType,
+    UNVERIFIED_MESSAGE_SIZE,
+};
 use crate::transfer::receiver::FileReceiver;
 use crate::transfer::sender::{FileSender, TransferResult};
-use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig};
+use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig, TransportConfig};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +22,12 @@ use tauri::Emitter;
 use tokio::sync::RwLock;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Per-stream receive buffer (quinn's default): enough for a fast LAN, and
+/// with one stream per connection it bounds what a peer can make us buffer.
+const STREAM_RECEIVE_WINDOW: u32 = 1_250_000;
 const TRANSFER_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const IDENTITY_MISMATCH: &str =
+    "Device identity mismatch: the device at this address does not hold the paired key (possible impersonation)";
 /// How long the initiator waits for the other side's challenge.
 const CHALLENGE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -52,6 +62,28 @@ pub struct TransferManager {
     security: Arc<RwLock<crate::crypto::security::SecurityService>>,
     renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
     pairing: Arc<RwLock<crate::pairing::PairingState>>,
+    /// Kept to build per-connection client configs pinned to a paired key.
+    identity: DeviceIdentity,
+    transport: Arc<TransportConfig>,
+    limiter: Arc<ConnectionLimiter>,
+    handshakes: Arc<tokio::sync::Semaphore>,
+}
+
+/// Transport settings for every connection. Each conversation uses exactly
+/// one bidirectional stream, opened by the side that connected, so peers get
+/// no more than that: quinn's defaults (100 + 100 streams, unlimited
+/// connection window, datagrams on) would let any peer make us buffer
+/// hundreds of megabytes before our code reads a byte.
+fn transport_config() -> TransportConfig {
+    let mut transport = TransportConfig::default();
+    // Keep idle connections alive, so a pairing survives the user typing the code.
+    transport.keep_alive_interval(Some(Duration::from_secs(10)));
+    transport.max_concurrent_bidi_streams(1u32.into());
+    transport.max_concurrent_uni_streams(0u32.into());
+    transport.stream_receive_window(STREAM_RECEIVE_WINDOW.into());
+    transport.receive_window((2 * STREAM_RECEIVE_WINDOW).into());
+    transport.datagram_receive_buffer_size(None);
+    transport
 }
 
 impl TransferManager {
@@ -68,22 +100,20 @@ impl TransferManager {
         renames: Arc<RwLock<std::collections::HashMap<String, String>>>,
         pairing: Arc<RwLock<crate::pairing::PairingState>>,
     ) -> Result<Self, crate::GenericError> {
-        // Keep idle connections alive, so a pairing survives the user typing the code.
-        let mut transport = quinn::TransportConfig::default();
-        transport.keep_alive_interval(Some(Duration::from_secs(10)));
-        let transport = Arc::new(transport);
+        let transport = Arc::new(transport_config());
 
         let server_crypto = Arc::new(quinn::crypto::rustls::QuicServerConfig::try_from(
             identity.get_server_config()?,
         )?);
         let mut server_config = ServerConfig::with_crypto(server_crypto);
         server_config.transport_config(transport.clone());
+        server_config.max_incoming(MAX_QUEUED_INCOMING);
 
         let client_crypto = Arc::new(quinn::crypto::rustls::QuicClientConfig::try_from(
             identity.get_client_config()?,
         )?);
         let mut client_config = ClientConfig::new(client_crypto);
-        client_config.transport_config(transport);
+        client_config.transport_config(transport.clone());
 
         let addr = format!("0.0.0.0:{}", port).parse()?;
         let mut endpoint = Endpoint::server(server_config, addr)?;
@@ -100,6 +130,10 @@ impl TransferManager {
             security,
             renames,
             pairing,
+            identity: identity.clone(),
+            transport,
+            limiter: Arc::new(ConnectionLimiter::default()),
+            handshakes: Arc::new(tokio::sync::Semaphore::new(MAX_HANDSHAKES)),
         })
     }
 
@@ -107,6 +141,12 @@ impl TransferManager {
         println!("[Transfer] Server listening on port");
         let app_handle = self.app_handle.clone();
         while let Some(conn) = self.endpoint.accept().await {
+            // Bound the handshakes running at once; refuse the rest.
+            let Ok(handshake_permit) = self.handshakes.clone().try_acquire_owned() else {
+                println!("[Transfer] Refusing connection: too many handshakes in progress");
+                conn.refuse();
+                continue;
+            };
             println!("[Transfer] Incoming connection accepted");
             let save_dir_str = self.settings.read().await.get_settings().download_dir;
             let save_dir = PathBuf::from(save_dir_str);
@@ -122,10 +162,26 @@ impl TransferManager {
             let settings = self.settings.clone();
             let pairing = self.pairing.clone();
             let my_fingerprint = self.fingerprint.clone();
+            let limiter = self.limiter.clone();
             tauri::async_runtime::spawn(async move {
-                match conn.await {
+                let handshake = conn.await;
+                drop(handshake_permit);
+                match handshake {
                     Ok(connection) => {
                         println!("[Transfer] Connection established from remote peer");
+                        let class = match peer_fingerprint(&connection) {
+                            Ok(fp) if security.read().await.is_known_key(&fp) => PeerClass::Paired,
+                            _ => PeerClass::Unknown,
+                        };
+                        // Held until this connection's handler returns.
+                        let Some(_slot) = limiter.try_acquire(connection.remote_address().ip(), class) else {
+                            println!(
+                                "[Transfer] Refusing connection from {}: too many open",
+                                connection.remote_address().ip()
+                            );
+                            connection.close(quinn::VarInt::from_u32(0), b"too many connections");
+                            return;
+                        };
                         let receiver = match FileReceiver::new(
                             save_dir, connection, app_handle, database, transfers, security,
                             renames, settings, pairing, my_fingerprint,
@@ -154,8 +210,22 @@ impl TransferManager {
         port: u16,
         timeout: Duration,
     ) -> Result<Connection, crate::GenericError> {
+        self.connect_with(None, ip, port, timeout).await
+    }
+
+    /// Connects with `config`, or the default client config if `None`.
+    async fn connect_with(
+        &self,
+        config: Option<ClientConfig>,
+        ip: &str,
+        port: u16,
+        timeout: Duration,
+    ) -> Result<Connection, crate::GenericError> {
         let addr = format!("{}:{}", ip, port).parse()?;
-        let connecting = self.endpoint.connect(addr, "proxishare.local")?;
+        let connecting = match config {
+            Some(config) => self.endpoint.connect_with(config, addr, "proxishare.local")?,
+            None => self.endpoint.connect(addr, "proxishare.local")?,
+        };
         match tokio::time::timeout(timeout, connecting).await {
             Ok(Ok(conn)) => Ok(conn),
             Ok(Err(e)) => Err(format!("Connection failed: {}", e).into()),
@@ -163,8 +233,9 @@ impl TransferManager {
         }
     }
 
-    /// Connects to a paired device and checks it holds the pinned key before
-    /// anything is sent. A different key means someone else answered.
+    /// Connects to a paired device. The handshake itself requires the pinned
+    /// key, so a different device at this address is refused before we send
+    /// our certificate; the key is checked again afterwards.
     async fn connect_verified(
         &self,
         device_id: &str,
@@ -172,7 +243,25 @@ impl TransferManager {
         port: u16,
         timeout: Duration,
     ) -> Result<Connection, crate::GenericError> {
-        let connection = self.connect(ip, port, timeout).await?;
+        let pinned = {
+            let security = self.security.read().await;
+            match security.pinned_fingerprint(device_id) {
+                Some(fp) => fp.to_string(),
+                // Not paired, or paired before keys were pinned: nothing to connect to.
+                None => return Err(security.pairing_state(device_id).rejection().into()),
+            }
+        };
+        let pinned_config = self.identity.get_pinned_client_config(&pinned)?;
+        let mut config = ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(pinned_config.config.clone())?,
+        ));
+        config.transport_config(self.transport.clone());
+
+        let connection = match self.connect_with(Some(config), ip, port, timeout).await {
+            Ok(connection) => connection,
+            Err(_) if pinned_config.key_mismatch() => return Err(IDENTITY_MISMATCH.into()),
+            Err(e) => return Err(e),
+        };
         let fingerprint = peer_fingerprint(&connection)?;
         let trust = self.security.read().await.verify_peer(device_id, &fingerprint);
         if trust == PeerTrust::Verified {
@@ -181,9 +270,7 @@ impl TransferManager {
 
         connection.close(quinn::VarInt::from_u32(0), b"identity check failed");
         Err(match trust {
-            PeerTrust::KeyMismatch => {
-                "Device identity mismatch: the device at this address does not hold the paired key (possible impersonation)".into()
-            }
+            PeerTrust::KeyMismatch => IDENTITY_MISMATCH.into(),
             other => other.rejection().into(),
         })
     }
@@ -227,7 +314,11 @@ impl TransferManager {
         write_message(&mut send_stream, &msg).await?;
 
         // An unresponsive or older peer must not hang the caller.
-        let ack_msg = match tokio::time::timeout(CONNECT_TIMEOUT, read_message(&mut recv_stream)).await
+        let ack_msg = match tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            read_message_limited(&mut recv_stream, UNVERIFIED_MESSAGE_SIZE),
+        )
+        .await
         {
             Ok(res) => res?,
             Err(_) => return Err("Timed out waiting for HelloAck".into()),
@@ -292,7 +383,11 @@ impl TransferManager {
         )
         .await?;
 
-        let challenge = match tokio::time::timeout(CHALLENGE_TIMEOUT, read_message(&mut recv_stream)).await
+        let challenge = match tokio::time::timeout(
+            CHALLENGE_TIMEOUT,
+            read_message_limited(&mut recv_stream, UNVERIFIED_MESSAGE_SIZE),
+        )
+        .await
         {
             Ok(res) => res?,
             Err(_) => return Err("The other device did not respond to the pairing request".into()),
@@ -345,7 +440,7 @@ impl TransferManager {
     pub async fn finish_pairing(&self, mut pairing: OutgoingPairing) {
         let reply = tokio::time::timeout(
             PAIRING_TTL + Duration::from_secs(10),
-            read_message(&mut pairing.recv_stream),
+            read_message_limited(&mut pairing.recv_stream, UNVERIFIED_MESSAGE_SIZE),
         )
         .await;
 
@@ -453,5 +548,58 @@ impl TransferManager {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A client and server over loopback, both using `transport_config`.
+    async fn connected_pair() -> (Endpoint, Connection, Connection) {
+        let server_identity = DeviceIdentity::generate_ephemeral().unwrap();
+        let client_identity = DeviceIdentity::generate_ephemeral().unwrap();
+        let transport = Arc::new(transport_config());
+
+        let mut server_config = ServerConfig::with_crypto(Arc::new(
+            quinn::crypto::rustls::QuicServerConfig::try_from(server_identity.get_server_config().unwrap())
+                .unwrap(),
+        ));
+        server_config.transport_config(transport.clone());
+        let server = Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+
+        let mut client_config = ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(client_identity.get_client_config().unwrap())
+                .unwrap(),
+        ));
+        client_config.transport_config(transport);
+        let client = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+
+        let connecting = client
+            .connect_with(client_config, server.local_addr().unwrap(), "proxishare.local")
+            .unwrap();
+        let (client_conn, server_conn) = tokio::join!(connecting, async {
+            server.accept().await.unwrap().await.unwrap()
+        });
+        (server, client_conn.unwrap(), server_conn)
+    }
+
+    #[tokio::test]
+    async fn peers_get_one_stream_and_no_datagrams() {
+        let (_server, client, _server_conn) = connected_pair().await;
+        let short = Duration::from_millis(300);
+
+        // Opening a stream only sends anything once it's written to.
+        let (mut first, _) = client.open_bi().await.unwrap();
+        first.write_all(b"hello").await.unwrap();
+        assert!(
+            tokio::time::timeout(short, client.open_bi()).await.is_err(),
+            "a second concurrent stream was allowed"
+        );
+        assert!(
+            tokio::time::timeout(short, client.open_uni()).await.is_err(),
+            "a unidirectional stream was allowed"
+        );
+        assert!(client.max_datagram_size().is_none(), "datagrams are enabled");
     }
 }
