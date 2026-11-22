@@ -26,9 +26,10 @@
 ## Security
 
 - **Verified device identity:** Each device has its own private key, created on first launch and never shared. Every connection uses mutual TLS 1.3 over QUIC, and both sides prove they hold their key.
-- **Key pinning at pairing:** Pairing records the other device's key. Afterwards, a device is only accepted if it holds that exact key. Someone who copies a paired device's name or ID is rejected before any file moves, and sending to an address that answers with the wrong key is refused.
-- **Pairing codes that resist interception:** The 6-digit code is computed from both devices' keys plus fresh random values exchanged in a commit-then-reveal handshake. An attacker in the middle would see different codes on each side.
+- **Key pinning at pairing:** Pairing records the other device's key. Afterwards, a device is only accepted if it holds that exact key. Someone who copies a paired device's name or ID is rejected before any file moves. When sending, a device at that address with the wrong key is refused during the connection handshake, before your device identifies itself.
+- **Pairing codes that resist interception:** The 6-digit code is computed from both devices' keys plus fresh random values exchanged in a commit-then-reveal handshake. An attacker in the middle would see different codes on each side. A fake request that claims another device's ID can't block or replace the real one.
 - **Strict receive protocol:** Nothing is written until you accept an offer (or turn on auto-accept). The receiver enforces the order of protocol messages, the declared sizes and a per-file hash, and caps message and chunk sizes.
+- **Limits on unpaired devices:** A device that isn't paired can only send small messages (ping and pairing), must speak within seconds, and can hold only a few connections and pairing requests at a time. This stops anyone on the network from exhausting your device's memory or flooding it with pairing prompts.
 - **Path traversal protection:** Incoming names and paths are sanitized (no `..`, absolute paths or drive prefixes), and writes are refused if a symlink would redirect them outside the download folder.
 
 ### Upgrading from 1.1
