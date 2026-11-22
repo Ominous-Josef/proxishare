@@ -144,6 +144,7 @@ async fn get_discovered_devices(state: tauri::State<'_, AppState>) -> Result<Vec
                 all_ips: vec![td.last_ip.clone()],
                 port: td.last_port,
                 last_seen: td.last_seen,
+                contact_only: false,
             });
         }
     }

@@ -22,6 +22,28 @@ pub struct Device {
     pub all_ips: Vec<String>,
     pub port: u16,
     pub last_seen: i64,
+    /// Only known because it contacted us, unverified (not via mDNS, manual
+    /// add or a paired key). Such entries are capped, see `insert_contact`.
+    #[serde(skip)]
+    pub contact_only: bool,
+}
+
+/// Unverified contacts kept in the device list at once.
+const MAX_CONTACTS: usize = 16;
+
+/// Adds an unverified device that contacted us. Never overwrites a device we
+/// already know (otherwise anyone could redirect a known id to their IP).
+/// Each address keeps only its latest contact, and the total is capped, so
+/// one peer can't fill the list by inventing ids.
+fn insert_contact(devices: &mut HashMap<String, Device>, device: Device) {
+    if devices.contains_key(&device.id) {
+        return;
+    }
+    devices.retain(|_, d| !(d.contact_only && d.ip == device.ip));
+    if devices.values().filter(|d| d.contact_only).count() >= MAX_CONTACTS {
+        return;
+    }
+    devices.insert(device.id.clone(), device);
 }
 
 use parking_lot::RwLock as SyncRwLock;
@@ -246,6 +268,7 @@ impl DiscoveryService {
                                         all_ips,
                                         port,
                                         last_seen: Utc::now().timestamp(),
+                                        contact_only: false,
                                     },
                                 );
                             }
@@ -328,21 +351,25 @@ impl DiscoveryService {
         self.discovered_devices.write().await.remove(id);
     }
 
-    /// Adds a device that contacted us directly, but never overwrites one we
-    /// already know: otherwise anyone could redirect a known device id to their IP.
+    /// Adds a device that contacted us directly without proving it's paired.
+    /// See `insert_contact` for the limits.
     pub async fn add_if_unknown(&self, id: String, name: String, ip: String, port: u16) {
         if !is_valid_device_id(&id) || id == self.device_id {
             return;
         }
         let mut devices = self.discovered_devices.write().await;
-        devices.entry(id.clone()).or_insert(Device {
-            id,
-            name,
-            ip: ip.clone(),
-            all_ips: vec![ip],
-            port,
-            last_seen: Utc::now().timestamp(),
-        });
+        insert_contact(
+            &mut devices,
+            Device {
+                id,
+                name,
+                ip: ip.clone(),
+                all_ips: vec![ip],
+                port,
+                last_seen: Utc::now().timestamp(),
+                contact_only: true,
+            },
+        );
     }
 
     pub async fn add_manual_device(&self, id: String, name: String, ip: String, port: u16) {
@@ -356,6 +383,7 @@ impl DiscoveryService {
                 all_ips: vec![ip],
                 port,
                 last_seen: Utc::now().timestamp(),
+                contact_only: false,
             },
         );
     }
@@ -448,6 +476,42 @@ pub struct NetworkDiagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn device(id: &str, ip: &str, contact_only: bool) -> Device {
+        Device {
+            id: id.into(),
+            name: "Laptop".into(),
+            ip: ip.into(),
+            all_ips: vec![ip.into()],
+            port: 51731,
+            last_seen: 0,
+            contact_only,
+        }
+    }
+
+    #[test]
+    fn one_address_keeps_only_its_latest_contact() {
+        let mut devices = HashMap::new();
+        for i in 0..5 {
+            insert_contact(&mut devices, device(&format!("spam-{}", i), "10.0.0.66", true));
+        }
+        assert_eq!(devices.len(), 1);
+        assert!(devices.contains_key("spam-4"));
+    }
+
+    #[test]
+    fn contacts_are_capped_and_never_replace_known_devices() {
+        let mut devices = HashMap::new();
+        devices.insert("real".to_string(), device("real", "10.0.0.2", false));
+        insert_contact(&mut devices, device("real", "10.0.0.66", true));
+        assert_eq!(devices["real"].ip, "10.0.0.2");
+
+        for i in 0..(MAX_CONTACTS + 10) {
+            insert_contact(&mut devices, device(&format!("c{}", i), &format!("10.0.1.{}", i), true));
+        }
+        assert_eq!(devices.values().filter(|d| d.contact_only).count(), MAX_CONTACTS);
+        assert!(devices.contains_key("real"));
+    }
 
     #[test]
     fn short_id_never_panics() {

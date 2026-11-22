@@ -10,6 +10,15 @@ pub const PROTOCOL_VERSION: u8 = 3;
 /// Upper bound for a single framed message (manifests for large folders are the biggest).
 pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
+/// Upper bound for messages from a peer that hasn't proved it's paired. Hello,
+/// pairing and their replies are a few hundred bytes.
+pub const UNVERIFIED_MESSAGE_SIZE: usize = 64 * 1024;
+
+/// How much is allocated for a message before its bytes arrive. The buffer
+/// grows as data comes in, so a peer that announces a large message without
+/// sending it doesn't get to reserve our memory.
+const INITIAL_READ_CAPACITY: usize = 64 * 1024;
+
 pub const BASE_CHUNK_SIZE: usize = 128 * 1024; // 128KB minimum
 pub const MAX_CHUNK_SIZE: usize = 8 * 1024 * 1024; // 8MB maximum
 
@@ -195,6 +204,14 @@ pub async fn write_message<W: AsyncWrite + Unpin>(
 pub async fn read_message<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> Result<MessageType, crate::GenericError> {
+    read_message_limited(reader, MAX_MESSAGE_SIZE).await
+}
+
+/// Reads one frame, refusing anything larger than `max_len`.
+pub async fn read_message_limited<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    max_len: usize,
+) -> Result<MessageType, crate::GenericError> {
     let mut header = [0u8; 5];
     reader.read_exact(&mut header).await?;
 
@@ -207,12 +224,15 @@ pub async fn read_message<R: AsyncRead + Unpin>(
     }
 
     let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
-    if len > MAX_MESSAGE_SIZE {
+    if len > max_len {
         return Err(format!("Message too large ({} bytes)", len).into());
     }
 
-    let mut data = vec![0u8; len];
-    reader.read_exact(&mut data).await?;
+    let mut data = Vec::with_capacity(len.min(INITIAL_READ_CAPACITY));
+    (&mut *reader).take(len as u64).read_to_end(&mut data).await?;
+    if data.len() != len {
+        return Err("Connection closed in the middle of a message".into());
+    }
 
     Ok(bincode_options().deserialize(&data)?)
 }
@@ -339,5 +359,37 @@ mod tests {
             Ok(MessageType::Hello { device_name, .. }) => assert_eq!(device_name, name),
             other => panic!("message lost: {:?}", other.map(|_| ())),
         }
+    }
+
+    fn hello(name_len: usize) -> MessageType {
+        MessageType::Hello {
+            device_id: "a".into(),
+            device_name: "x".repeat(name_len),
+        }
+    }
+
+    #[tokio::test]
+    async fn limited_read_refuses_oversized_messages() {
+        let (mut a, mut b) = tokio::io::duplex(256 * 1024);
+        write_message(&mut a, &hello(UNVERIFIED_MESSAGE_SIZE)).await.unwrap();
+        let err = read_message_limited(&mut b, UNVERIFIED_MESSAGE_SIZE).await.unwrap_err();
+        assert!(err.to_string().contains("too large"), "{}", err);
+
+        let (mut c, mut d) = tokio::io::duplex(1024);
+        write_message(&mut c, &hello(100)).await.unwrap();
+        assert!(read_message_limited(&mut d, UNVERIFIED_MESSAGE_SIZE).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn announced_size_is_not_reserved_up_front() {
+        // A header announcing the maximum size, then only a few bytes.
+        let (mut a, mut b) = tokio::io::duplex(1024);
+        let mut frame = vec![PROTOCOL_VERSION];
+        frame.extend_from_slice(&(MAX_MESSAGE_SIZE as u32).to_be_bytes());
+        frame.extend_from_slice(b"short");
+        a.write_all(&frame).await.unwrap();
+        drop(a);
+        let err = read_message(&mut b).await.unwrap_err();
+        assert!(err.to_string().contains("middle of a message"), "{}", err);
     }
 }

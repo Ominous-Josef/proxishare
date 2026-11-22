@@ -13,10 +13,12 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, Serve
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{DigitallySignedStruct, DistinguishedName, SignatureScheme};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 const IDENTITY_FILE: &str = "identity.key";
 
+#[derive(Clone)]
 pub struct DeviceIdentity {
     cert_der: Vec<u8>,
     key_der: Vec<u8>,
@@ -84,14 +86,48 @@ impl DeviceIdentity {
     }
 
     pub fn get_client_config(&self) -> Result<rustls::ClientConfig, crate::GenericError> {
+        self.client_config_with(PeerKeyVerifier::new())
+    }
+
+    /// A client config that only completes the handshake with a server holding
+    /// the `expected` key. A different key aborts before our own certificate
+    /// is sent, so a wrong device at a paired device's address learns nothing
+    /// about us.
+    pub fn get_pinned_client_config(&self, expected: &str) -> Result<PinnedClientConfig, crate::GenericError> {
+        let mismatch = Arc::new(AtomicBool::new(false));
+        let mut verifier = PeerKeyVerifier::new();
+        verifier.expected = Some(ExpectedKey {
+            fingerprint: expected.to_string(),
+            mismatch: mismatch.clone(),
+        });
+        Ok(PinnedClientConfig {
+            config: self.client_config_with(verifier)?,
+            mismatch,
+        })
+    }
+
+    fn client_config_with(&self, verifier: PeerKeyVerifier) -> Result<rustls::ClientConfig, crate::GenericError> {
         let mut config = rustls::ClientConfig::builder_with_provider(provider())
             .with_protocol_versions(&[&rustls::version::TLS13])?
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(PeerKeyVerifier::new()))
+            .with_custom_certificate_verifier(Arc::new(verifier))
             .with_client_auth_cert(self.cert_chain(), self.private_key())?;
 
         config.alpn_protocols = vec![b"proxishare".to_vec()];
         Ok(config)
+    }
+}
+
+/// A client config bound to one expected server key.
+pub struct PinnedClientConfig {
+    pub config: rustls::ClientConfig,
+    /// Set if the handshake failed because the server held a different key.
+    mismatch: Arc<AtomicBool>,
+}
+
+impl PinnedClientConfig {
+    pub fn key_mismatch(&self) -> bool {
+        self.mismatch.load(Ordering::Relaxed)
     }
 }
 
@@ -138,15 +174,25 @@ pub fn peer_fingerprint(connection: &quinn::Connection) -> Result<String, crate:
 /// Accepts any self-signed certificate (there is no CA), but verifies the
 /// handshake signature, which proves the peer holds the certificate's key.
 /// Which keys are acceptable is decided after the handshake, by fingerprint.
+/// When connecting to a paired device, servers holding any other key are
+/// rejected.
 #[derive(Debug)]
 struct PeerKeyVerifier {
     algorithms: WebPkiSupportedAlgorithms,
+    expected: Option<ExpectedKey>,
+}
+
+#[derive(Debug)]
+struct ExpectedKey {
+    fingerprint: String,
+    mismatch: Arc<AtomicBool>,
 }
 
 impl PeerKeyVerifier {
     fn new() -> Self {
         Self {
             algorithms: rustls::crypto::ring::default_provider().signature_verification_algorithms,
+            expected: None,
         }
     }
 }
@@ -161,6 +207,14 @@ impl ServerCertVerifier for PeerKeyVerifier {
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         rustls::server::ParsedCertificate::try_from(end_entity)?;
+        if let Some(expected) = &self.expected {
+            if fingerprint_of(end_entity.as_ref())? != expected.fingerprint {
+                expected.mismatch.store(true, Ordering::Relaxed);
+                return Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::ApplicationVerificationFailure,
+                ));
+            }
+        }
         Ok(ServerCertVerified::assertion())
     }
 
@@ -453,6 +507,25 @@ mod handshake_tests {
         )
         .await;
         assert!(outcome.server.is_err(), "server accepted a forged client: {:?}", outcome.server);
+    }
+
+    #[tokio::test]
+    async fn pinned_client_stops_before_identifying_itself_to_a_wrong_server() {
+        let laptop = DeviceIdentity::generate_ephemeral().unwrap();
+        let impostor = DeviceIdentity::generate_ephemeral().unwrap();
+        let me = DeviceIdentity::generate_ephemeral().unwrap();
+
+        let real = me.get_pinned_client_config(&laptop.fingerprint).unwrap();
+        let outcome = handshake(laptop.get_server_config().unwrap(), real.config.clone()).await;
+        assert_eq!(outcome.client.unwrap(), laptop.fingerprint);
+        assert!(!real.key_mismatch());
+
+        let pinned = me.get_pinned_client_config(&laptop.fingerprint).unwrap();
+        let outcome = handshake(impostor.get_server_config().unwrap(), pinned.config.clone()).await;
+        assert!(outcome.client.is_err(), "client accepted the wrong server");
+        assert!(pinned.key_mismatch());
+        // The impostor never got a completed handshake, so never saw our key.
+        assert!(outcome.server.is_err(), "impostor completed a handshake: {:?}", outcome.server);
     }
 
     #[tokio::test]
